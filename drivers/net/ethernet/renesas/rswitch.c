@@ -1007,6 +1007,7 @@ struct rswitch_private {
 	struct rswitch_desc *desc_bat;
 	dma_addr_t desc_bat_dma;
 	u32 desc_bat_size;
+	phys_addr_t dev_id;
 
 	struct rswitch_gwca gwca;
 	struct rswitch_etha etha[RSWITCH_MAX_NUM_ETHA];
@@ -1886,12 +1887,24 @@ static struct net_device_stats *rswitch_get_stats(struct net_device *ndev)
 	return &ndev->stats;
 }
 
+static int rswitch_port_get_port_parent_id(struct net_device *ndev,
+					  struct netdev_phys_item_id *ppid)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+
+	ppid->id_len = sizeof(rdev->priv->dev_id);
+	memcpy(&ppid->id, &rdev->priv->dev_id, ppid->id_len);
+
+	return 0;
+}
+
 static const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_open = rswitch_open,
 	.ndo_stop = rswitch_stop,
 	.ndo_start_xmit = rswitch_start_xmit,
 	.ndo_get_stats = rswitch_get_stats,
 	.ndo_validate_addr = eth_validate_addr,
+	.ndo_get_port_parent_id = rswitch_port_get_port_parent_id,
 //	.ndo_change_mtu = eth_change_mtu,
 };
 
@@ -2479,6 +2492,7 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->serdes_addr);
 
 	debug_addr = priv->addr;
+	priv->dev_id = res->start;
 
 	/* Fixed to use GWCA0 */
 	priv->gwca.index = 3;
