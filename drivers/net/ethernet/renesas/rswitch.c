@@ -1018,6 +1018,7 @@ struct rswitch_private {
 	struct rswitch_desc *desc_bat;
 	dma_addr_t desc_bat_dma;
 	u32 desc_bat_size;
+	phys_addr_t dev_id;
 
 	struct rswitch_device *rdev[RSWITCH_MAX_NUM_NDEV];
 
@@ -2112,6 +2113,17 @@ static int rswitch_do_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
 	return 0;
 }
 
+static int rswitch_port_get_port_parent_id(struct net_device *ndev,
+					  struct netdev_phys_item_id *ppid)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+
+	ppid->id_len = sizeof(rdev->priv->dev_id);
+	memcpy(&ppid->id, &rdev->priv->dev_id, ppid->id_len);
+
+	return 0;
+}
+
 static const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_open = rswitch_open,
 	.ndo_stop = rswitch_stop,
@@ -2120,6 +2132,7 @@ static const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_do_ioctl = rswitch_do_ioctl,
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_mac_address = eth_mac_addr,
+	.ndo_get_port_parent_id = rswitch_port_get_port_parent_id,
 //	.ndo_change_mtu = eth_change_mtu,
 };
 
@@ -2849,6 +2862,8 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->serdes_addr);
 
 	debug_addr = priv->addr;
+	priv->dev_id = res->start;
+
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(40));
 	if (ret < 0) {
 		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
