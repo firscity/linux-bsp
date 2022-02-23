@@ -21,6 +21,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <net/flow_offload.h>
 
 #include "rswitch_ptp.h"
 
@@ -2051,6 +2052,24 @@ static int rswitch_hwstamp_get(struct net_device *ndev, struct ifreq *req)
 	return copy_to_user(req->ifr_data, &config, sizeof(config)) ? -EFAULT : 0;
 }
 
+LIST_HEAD(rswitch_block_cb_list);
+
+static int rswitch_setup_tc(struct net_device *ndev, enum tc_setup_type type,
+			 void *type_data)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+
+	switch (type) {
+	case TC_SETUP_BLOCK:
+		return flow_block_cb_setup_simple(type_data,
+						  &rswitch_block_cb_list,
+						  NULL,
+						  rdev, rdev, true);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static int rswitch_hwstamp_set(struct net_device *ndev, struct ifreq *req)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
@@ -2133,6 +2152,7 @@ static const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_mac_address = eth_mac_addr,
 	.ndo_get_port_parent_id = rswitch_port_get_port_parent_id,
+	.ndo_setup_tc           = rswitch_setup_tc,
 //	.ndo_change_mtu = eth_change_mtu,
 };
 
@@ -2566,8 +2586,8 @@ static int rswitch_ndev_register(struct rswitch_private *priv, int index)
 
 	spin_lock_init(&rdev->lock);
 
-	ndev->features = NETIF_F_RXCSUM;
-	ndev->hw_features = NETIF_F_RXCSUM;
+	ndev->features = NETIF_F_RXCSUM | NETIF_F_HW_TC | NETIF_F_HW_L2FW_DOFFLOAD;
+	ndev->hw_features = NETIF_F_RXCSUM | NETIF_F_HW_TC | NETIF_F_HW_L2FW_DOFFLOAD;
 	ndev->base_addr = (unsigned long)rdev->addr;
 	snprintf(ndev->name, IFNAMSIZ, "tsn%d", index);
 	ndev->netdev_ops = &rswitch_netdev_ops;
