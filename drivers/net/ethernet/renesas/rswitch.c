@@ -20,6 +20,8 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <net/flow_offload.h>
+#include <net/fib_notifier.h>
 
 static void *debug_addr;
 static inline u32 rs_read32(void *addr)
@@ -1009,6 +1011,8 @@ struct rswitch_private {
 	u32 desc_bat_size;
 	phys_addr_t dev_id;
 
+	struct notifier_block fib_nb;
+
 	struct rswitch_gwca gwca;
 	struct rswitch_etha etha[RSWITCH_MAX_NUM_ETHA];
 	struct rswitch_mfwd mfwd;
@@ -1898,6 +1902,32 @@ static int rswitch_port_get_port_parent_id(struct net_device *ndev,
 	return 0;
 }
 
+LIST_HEAD(rswitch_block_cb_list);
+
+static int rswitch_setup_tc(struct net_device *ndev, enum tc_setup_type type,
+			 void *type_data)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+
+	pr_err("===== >> %s %d", __func__, __LINE__);
+	switch (type) {
+	case TC_SETUP_BLOCK:
+		return flow_block_cb_setup_simple(type_data,
+						  &rswitch_block_cb_list,
+						  NULL,
+						  rdev, rdev, true);
+	//case TC_SETUP_QDISC_MQPRIO: {
+	//	struct tc_mqprio_qopt *mqprio = type_data;
+	//
+	//	mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
+	//
+	//	return bnxt_setup_mq_tc(dev, mqprio->num_tc);
+	//}
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_open = rswitch_open,
 	.ndo_stop = rswitch_stop,
@@ -1905,6 +1935,7 @@ static const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_get_stats = rswitch_get_stats,
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_get_port_parent_id = rswitch_port_get_port_parent_id,
+	.ndo_setup_tc           = rswitch_setup_tc,
 //	.ndo_change_mtu = eth_change_mtu,
 };
 
@@ -2453,10 +2484,18 @@ out:
 	return err;
 }
 
+/* Called with rcu_read_lock() */
+static int rswitch_fib_event(struct notifier_block *nb,
+				   unsigned long event, void *ptr)
+{
+	return NOTIFY_DONE;
+}
+
 static int renesas_eth_sw_probe(struct platform_device *pdev)
 {
 	struct rswitch_private *priv;
 	struct resource *res, *res_serdes;
+	int err;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	res_serdes = platform_get_resource(pdev, IORESOURCE_MEM, 1);
@@ -2511,6 +2550,14 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	rswitch_init(priv);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
+
+	priv->fib_nb.notifier_call = rswitch_fib_event;
+	err = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
+	if (err) {
+		pr_err("%s %d error = %d\n", __func__, __LINE__, err);
+	} else {
+		pr_err("%s %d SUCCESS\n", __func__, __LINE__);
+	}
 
 	return 0;
 }
