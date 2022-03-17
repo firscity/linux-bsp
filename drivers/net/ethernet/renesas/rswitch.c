@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <net/flow_offload.h>
+#include <net/fib_notifier.h>
 
 #include "rswitch_ptp.h"
 
@@ -1020,6 +1021,7 @@ struct rswitch_private {
 	dma_addr_t desc_bat_dma;
 	u32 desc_bat_size;
 	phys_addr_t dev_id;
+	struct notifier_block fib_nb;
 
 	struct rswitch_device *rdev[RSWITCH_MAX_NUM_NDEV];
 
@@ -2059,6 +2061,7 @@ static int rswitch_setup_tc(struct net_device *ndev, enum tc_setup_type type,
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
 
+	pr_err("===== >> %s %d", __func__, __LINE__);
 	switch (type) {
 	case TC_SETUP_BLOCK:
 		return flow_block_cb_setup_simple(type_data,
@@ -2814,6 +2817,26 @@ out:
 	return err;
 }
 
+/* Called with rcu_read_lock() */
+static int rswitch_fib_event(struct notifier_block *nb,
+				   unsigned long event, void *ptr)
+{
+	struct fib_notifier_info *info = ptr;
+	//struct fib_entry_notifier_info *fen_info = ptr;
+	pr_err("%s %d event = 0x%lx, family = 0x%x\n", __func__, __LINE__, event, info->family);
+
+	switch (event) {
+	case FIB_EVENT_RULE_ADD:
+	case FIB_EVENT_RULE_DEL:
+	case FIB_EVENT_ENTRY_ADD:
+	case FIB_EVENT_ENTRY_REPLACE:
+	case FIB_EVENT_ENTRY_APPEND:
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
 static void rswitch_deinit_rdev(struct rswitch_private *priv, int index)
 {
 	struct rswitch_device *rdev = priv->rdev[index];
@@ -2907,6 +2930,14 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	rswitch_init(priv);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
+
+	priv->fib_nb.notifier_call = rswitch_fib_event;
+	ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
+	if (ret) {
+		pr_err("%s %d error = %d\n", __func__, __LINE__, ret);
+	} else {
+		pr_err("%s %d SUCCESS\n", __func__, __LINE__);
+	}
 
 	return 0;
 }
