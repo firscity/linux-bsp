@@ -21,6 +21,8 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <net/flow_offload.h>
+#include <net/fib_notifier.h>
 
 #include "rswitch_ptp.h"
 #include "rswitch.h"
@@ -1873,6 +1875,25 @@ static int rswitch_hwstamp_get(struct net_device *ndev, struct ifreq *req)
 	return copy_to_user(req->ifr_data, &config, sizeof(config)) ? -EFAULT : 0;
 }
 
+LIST_HEAD(rswitch_block_cb_list);
+
+static int rswitch_setup_tc(struct net_device *ndev, enum tc_setup_type type,
+			 void *type_data)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+
+	pr_err("===== >> %s %d", __func__, __LINE__);
+	switch (type) {
+	case TC_SETUP_BLOCK:
+		return flow_block_cb_setup_simple(type_data,
+						  &rswitch_block_cb_list,
+						  NULL,
+						  rdev, rdev, true);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static int rswitch_hwstamp_set(struct net_device *ndev, struct ifreq *req)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
@@ -1935,6 +1956,17 @@ static int rswitch_do_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
 	return 0;
 }
 
+static int rswitch_port_get_port_parent_id(struct net_device *ndev,
+					  struct netdev_phys_item_id *ppid)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+
+	ppid->id_len = sizeof(rdev->priv->dev_id);
+	memcpy(&ppid->id, &rdev->priv->dev_id, ppid->id_len);
+
+	return 0;
+}
+
 const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_open = rswitch_open,
 	.ndo_stop = rswitch_stop,
@@ -1943,6 +1975,8 @@ const struct net_device_ops rswitch_netdev_ops = {
 	.ndo_do_ioctl = rswitch_do_ioctl,
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_set_mac_address = eth_mac_addr,
+	.ndo_get_port_parent_id = rswitch_port_get_port_parent_id,
+	.ndo_setup_tc           = rswitch_setup_tc,
 //	.ndo_change_mtu = eth_change_mtu,
 };
 
@@ -2374,8 +2408,8 @@ static int rswitch_ndev_register(struct rswitch_private *priv, int index)
 
 	spin_lock_init(&rdev->lock);
 
-	ndev->features = NETIF_F_RXCSUM;
-	ndev->hw_features = NETIF_F_RXCSUM;
+	ndev->features = NETIF_F_RXCSUM | NETIF_F_HW_TC | NETIF_F_HW_L2FW_DOFFLOAD;
+	ndev->hw_features = NETIF_F_RXCSUM | NETIF_F_HW_TC | NETIF_F_HW_L2FW_DOFFLOAD;
 	ndev->base_addr = (unsigned long)rdev->addr;
 	snprintf(ndev->name, IFNAMSIZ, "tsn%d", index);
 	ndev->netdev_ops = &rswitch_netdev_ops;
@@ -2605,6 +2639,26 @@ out:
 	return err;
 }
 
+/* Called with rcu_read_lock() */
+static int rswitch_fib_event(struct notifier_block *nb,
+				   unsigned long event, void *ptr)
+{
+	struct fib_notifier_info *info = ptr;
+	//struct fib_entry_notifier_info *fen_info = ptr;
+	pr_err("%s %d event = 0x%lx, family = 0x%x\n", __func__, __LINE__, event, info->family);
+
+	switch (event) {
+	case FIB_EVENT_RULE_ADD:
+	case FIB_EVENT_RULE_DEL:
+	case FIB_EVENT_ENTRY_ADD:
+	case FIB_EVENT_ENTRY_REPLACE:
+	case FIB_EVENT_ENTRY_APPEND:
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
 static void rswitch_deinit_rdev(struct rswitch_private *priv, int index)
 {
 	struct rswitch_device *rdev = priv->rdev[index];
@@ -2673,6 +2727,8 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->serdes_addr);
 
 	debug_addr = priv->addr;
+	priv->dev_id = res->start;
+
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(40));
 	if (ret < 0) {
 		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
@@ -2701,6 +2757,14 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
+
+	priv->fib_nb.notifier_call = rswitch_fib_event;
+	ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
+	if (ret) {
+		pr_err("%s %d error = %d\n", __func__, __LINE__, ret);
+	} else {
+		pr_err("%s %d SUCCESS\n", __func__, __LINE__);
+	}
 
 	return 0;
 }
