@@ -26,6 +26,7 @@ int rswitch_xen_ndev_register(struct rswitch_private *priv, int index)
 	rdev = netdev_priv(ndev);
 	rdev->ndev = ndev;
 	rdev->priv = priv;
+	INIT_LIST_HEAD(&rdev->routing_list);
 	/* TODO: Fix index calculation */
 	priv->rdev[index + 3] = rdev;
 	rdev->port = 3; 	/* TODO: This is supposed to be GWCA0 port */
@@ -81,8 +82,8 @@ out_reg_netdev:
 int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
 			     struct rswitch_device *rdev2)
 {
-	rdev1->remote_chain = rdev2->rx_chain->index;
-	rdev2->remote_chain = rdev1->rx_chain->index;
+	rdev1->remote_chain = rdev2->rx_learning_chain->index;
+	rdev2->remote_chain = rdev1->rx_learning_chain->index;
 
 	return 0;
 }

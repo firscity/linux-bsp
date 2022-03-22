@@ -9,6 +9,21 @@
 #include <linux/phy.h>
 #include <linux/netdevice.h>
 #include <linux/io.h>
+#include <linux/list.h>
+#include <net/fib_rules.h>
+#include <net/fib_notifier.h>
+#include <net/ip_fib.h>
+
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/proc_fs.h>
+#include <linux/workqueue.h>
+#include <linux/sched.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/inetdevice.h>
+#include <net/devlink.h>
+#include <net/net_namespace.h>
 
 static inline u32 rs_read32(void *addr)
 {
@@ -127,6 +142,7 @@ struct rswitch_gwca_chain {
 #define RSWITCH_NUM_HW		5
 #define RSWITCH_MAX_NUM_ETHA	3
 #define RSWITCH_MAX_NUM_NDEV	8
+#define RSWITCH_MAX_NUM_L23 (256)
 
 #define TX_RING_SIZE		1024
 #define RX_RING_SIZE		1024
@@ -167,6 +183,48 @@ struct rswitch_mfwd {
 	int num_mac_table_entries;
 };
 
+struct l23_update_info {
+	struct rswitch_private *priv;
+	u8 dst_mac[ETH_ALEN];
+	u32 routing_port_valid;
+	u32 routing_number;
+	bool update_ttl;
+	bool update_dst_mac;
+	bool update_src_mac;
+};
+
+struct l3_ipv4_fwd_param {
+	struct rswitch_private *priv;
+	struct l23_update_info l23_info;
+	u32 src_ip;
+	union {
+		u32 dst_ip;
+		u32 pf_cascade_index;
+	};
+	// CPU sub destination
+	u32 csd;
+	// Destination vector
+	u32 dv;
+	// Source lock vector
+	u32 slv;
+	u8 frame_type;
+	bool enable_sub_dst;
+};
+
+struct l3_ipv4_fwd_param_list {
+	struct l3_ipv4_fwd_param *param;
+	struct list_head list;
+};
+
+struct rswitch_ipv4_route {
+	u32 ip;
+	u32 subnet;
+	u32 mask;
+	struct rswitch_device *dev;
+	struct list_head param_list;
+	struct list_head list;
+};
+
 struct rswitch_device {
 	struct rswitch_private *priv;
 	struct net_device *ndev;
@@ -174,13 +232,34 @@ struct rswitch_device {
 	void __iomem *addr;
 	bool gptp_master;
 	struct rswitch_gwca_chain *tx_chain;
-	struct rswitch_gwca_chain *rx_chain;
+	struct rswitch_gwca_chain *rx_default_chain;
+	struct rswitch_gwca_chain *rx_learning_chain;
 	spinlock_t lock;
 	u8 ts_tag;
 
 	int port;
 	struct rswitch_etha *etha;
 	int remote_chain;
+	struct list_head routing_list;
+};
+
+// Two-byte filter number
+#define PFL_TWBF_N (48)
+// Three-byte filter number
+#define PFL_THBF_N (16)
+// Four-byte filter number
+#define PFL_FOBF_N (48)
+// Range-byte filter number
+#define PFL_RAGF_N (16)
+// Cascade filter number
+#define PFL_CADF_N (64)
+
+struct rswitch_filters {
+	DECLARE_BITMAP(two_bytes, PFL_TWBF_N);
+	DECLARE_BITMAP(three_bytes, PFL_THBF_N);
+	DECLARE_BITMAP(four_bytes, PFL_FOBF_N);
+	DECLARE_BITMAP(range_byte, PFL_RAGF_N);
+	DECLARE_BITMAP(cascade, PFL_CADF_N);
 };
 
 struct rswitch_private {
@@ -192,19 +271,35 @@ struct rswitch_private {
 	dma_addr_t desc_bat_dma;
 	u32 desc_bat_size;
 	phys_addr_t dev_id;
-	struct notifier_block fib_nb;
 
 	struct rswitch_device *rdev[RSWITCH_MAX_NUM_NDEV];
 
 	struct rswitch_gwca gwca;
 	struct rswitch_etha etha[RSWITCH_MAX_NUM_ETHA];
 	struct rswitch_mfwd mfwd;
+	struct rswitch_filters filters;
 
 	struct clk *rsw_clk;
 	struct clk *phy_clk;
+
+	struct notifier_block fib_nb;
+	struct workqueue_struct *rswitch_fib_wq;
+	DECLARE_BITMAP(l23_routing_number, RSWITCH_MAX_NUM_L23);
 };
 
+struct rswitch_fib_event_work {
+	struct work_struct work;
+	union {
+		struct fib_entry_notifier_info fen_info;
+		struct fib_rule_notifier_info fr_info;
+	};
+	struct rswitch_private *priv;
+	unsigned long event;
+};
+
+extern struct pernet_operations rswitch_net_ops;
 extern const struct net_device_ops rswitch_netdev_ops;
+extern const struct devlink_ops rswitch_dl_ops;
 
 int rswitch_txdmac_init(struct net_device *ndev, struct rswitch_private *priv);
 void rswitch_txdmac_free(struct net_device *ndev, struct rswitch_private *priv);
@@ -217,3 +312,5 @@ int rswitch_poll(struct napi_struct *napi, int budget);
 int rswitch_xen_ndev_register(struct rswitch_private *priv, int index);
 int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
 			     struct rswitch_device *rdev2);
+
+void rswitch_add_ipv4_forward(struct rswitch_private *priv, u32 src_ip, u32 dst_ip);
