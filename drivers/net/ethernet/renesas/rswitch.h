@@ -9,6 +9,9 @@
 #include <linux/phy.h>
 #include <linux/netdevice.h>
 #include <linux/io.h>
+#include <net/fib_rules.h>
+#include <net/fib_notifier.h>
+#include <net/ip_fib.h>
 
 static inline u32 rs_read32(void *addr)
 {
@@ -193,6 +196,7 @@ struct rswitch_private {
 	u32 desc_bat_size;
 	phys_addr_t dev_id;
 	struct notifier_block fib_nb;
+	struct workqueue_struct *rswitch_fib_wq;
 
 	struct rswitch_device *rdev[RSWITCH_MAX_NUM_NDEV];
 
@@ -202,6 +206,16 @@ struct rswitch_private {
 
 	struct clk *rsw_clk;
 	struct clk *phy_clk;
+};
+
+struct rswitch_fib_event_work {
+	struct work_struct work;
+	union {
+		struct fib_entry_notifier_info fen_info;
+		struct fib_rule_notifier_info fr_info;
+	};
+	//struct rswitch_device *rswitch;
+	unsigned long event;
 };
 
 extern const struct net_device_ops rswitch_netdev_ops;

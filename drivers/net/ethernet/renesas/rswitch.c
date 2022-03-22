@@ -21,8 +21,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <net/flow_offload.h>
-#include <net/fib_notifier.h>
+#include <net/rtnetlink.h>
 
 #include "rswitch_ptp.h"
 #include "rswitch.h"
@@ -2427,6 +2426,10 @@ static int rswitch_ndev_register(struct rswitch_private *priv, int index)
 	if (!is_valid_ether_addr(ndev->dev_addr))
 		eth_hw_addr_random(ndev);
 
+	priv->rswitch_fib_wq = alloc_ordered_workqueue("rswitch_ordered", 0);
+	if (!priv->rswitch_fib_wq)
+		return -ENOMEM;
+
 	/* Network device register */
 	err = register_netdev(ndev);
 	if (err)
@@ -2639,22 +2642,89 @@ out:
 	return err;
 }
 
+static void rswitch_router_fib_event_work(struct work_struct *work)
+{
+	struct rswitch_fib_event_work *fib_work =
+		container_of(work, struct rswitch_fib_event_work, work);
+
+	pr_err("WQ run\n");
+
+	/* Protect internal structures from changes */
+	rtnl_lock();
+	switch (fib_work->event) {
+	case FIB_EVENT_ENTRY_REPLACE:
+		pr_err("%s %d FIB_EVENT_ENTRY_REPLACE REPLACE\n", __func__, __LINE__);
+		fib_info_put(fib_work->fen_info.fi);
+		break;
+	case FIB_EVENT_ENTRY_DEL:
+		pr_err("%s %d FIB_EVENT_ENTRY_DEL REPLACE\n", __func__, __LINE__);
+		fib_info_put(fib_work->fen_info.fi);
+		break;
+	case FIB_EVENT_RULE_ADD:
+		pr_err("%s %d FIB_EVENT_RULE_ADD REPLACE\n", __func__, __LINE__);
+		break;
+	case FIB_EVENT_RULE_DEL:
+		pr_err("%s %d FIB_EVENT_RULE_DEL REPLACE\n", __func__, __LINE__);
+		break;
+	}
+	rtnl_unlock();
+	kfree(fib_work);
+}
+
 /* Called with rcu_read_lock() */
 static int rswitch_fib_event(struct notifier_block *nb,
 				   unsigned long event, void *ptr)
 {
+	struct rswitch_private *pdev = container_of(nb, struct rswitch_private, fib_nb);
 	struct fib_notifier_info *info = ptr;
-	//struct fib_entry_notifier_info *fen_info = ptr;
+	struct rswitch_fib_event_work *fib_work;
+
 	pr_err("%s %d event = 0x%lx, family = 0x%x\n", __func__, __LINE__, event, info->family);
+	//dump_stack();
+
+	if (info->family != AF_INET)
+		return NOTIFY_DONE;
+
+	fib_work = kzalloc(sizeof(*fib_work), GFP_ATOMIC);
+	if (WARN_ON(!fib_work))
+		return NOTIFY_BAD;
+
+	fib_work->event = event;
+
+	INIT_WORK(&fib_work->work, rswitch_router_fib_event_work);
 
 	switch (event) {
-	case FIB_EVENT_RULE_ADD:
-	case FIB_EVENT_RULE_DEL:
-	case FIB_EVENT_ENTRY_ADD:
 	case FIB_EVENT_ENTRY_REPLACE:
+		if (info->family == AF_INET) {
+			struct fib_entry_notifier_info *fen_info = ptr;
+
+			if (fen_info->fi->fib_nh_is_v6) {
+				NL_SET_ERR_MSG_MOD(info->extack, "IPv6 gateway with IPv4 route is not supported");
+				kfree(fib_work);
+				return notifier_from_errno(-EINVAL);
+			}
+			if (fen_info->fi->nh) {
+				NL_SET_ERR_MSG_MOD(info->extack, "IPv4 route with nexthop objects is not supported");
+				kfree(fib_work);
+				return notifier_from_errno(-EINVAL);
+			}
+		}
+
+		memcpy(&fib_work->fen_info, ptr, sizeof(fib_work->fen_info));
+		/* Take referece on fib_info to prevent it from being
+		 * freed while work is queued. Release it afterwards.
+		 */
+		fib_info_hold(fib_work->fen_info.fi);
+		break;
+	case FIB_EVENT_RULE_DEL:
+	case FIB_EVENT_RULE_ADD:
+	case FIB_EVENT_ENTRY_ADD:
 	case FIB_EVENT_ENTRY_APPEND:
 		break;
 	}
+
+	//pr_err("queue work\n");
+	queue_work(pdev->rswitch_fib_wq, &fib_work->work);
 
 	return NOTIFY_DONE;
 }
@@ -2754,7 +2824,8 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 
 	rswitch_xen_ndev_register(priv, 0);
 	rswitch_xen_ndev_register(priv, 1);
-	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
+	pr_err("%s %d\n", __func__, __LINE__);
+	//rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
 
