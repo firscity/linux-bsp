@@ -1877,18 +1877,63 @@ static int rswitch_hwstamp_get(struct net_device *ndev, struct ifreq *req)
 
 LIST_HEAD(rswitch_block_cb_list);
 
+static int rswitch_setup_tc_block_bind(struct rswitch_device *rdev,
+		struct flow_block_offload *f, bool ingress)
+{
+
+	return 0;
+}
+
+static int rswitch_setup_tc_block_unbind(struct rswitch_device *rdev,
+		struct flow_block_offload *f, bool ingress)
+{
+
+	return 0;
+}
+
+static int rswitch_setup_tc_block_clsact(struct rswitch_device *rdev,
+		struct flow_block_offload *f, bool ingress)
+{
+	f->driver_block_list = &rswitch_block_cb_list;
+
+	switch (f->command) {
+	case FLOW_BLOCK_BIND:
+		return rswitch_setup_tc_block_bind(rdev, f, ingress);
+	case FLOW_BLOCK_UNBIND:
+		return rswitch_setup_tc_block_unbind(rdev, f, ingress);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int rswitch_setup_tc_block(struct rswitch_device *rdev,
+		struct flow_block_offload *f)
+{
+	printk("f->command = %d, f->binder_type =%d\n", f->command, f->binder_type);
+	switch (f->binder_type) {
+	case FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS:
+		return rswitch_setup_tc_block_clsact(rdev, f, true);
+	case FLOW_BLOCK_BINDER_TYPE_CLSACT_EGRESS:
+		return rswitch_setup_tc_block_clsact(rdev, f, false);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static int rswitch_setup_tc(struct net_device *ndev, enum tc_setup_type type,
 			 void *type_data)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
+	struct flow_block_offload *f;
 
-	pr_err("===== >> %s %d", __func__, __LINE__);
+	pr_err("=====>> %s enter: ndev->name=%s, type = %d\n", __func__, ndev->name, type);
 	switch (type) {
 	case TC_SETUP_BLOCK:
-		return flow_block_cb_setup_simple(type_data,
-						  &rswitch_block_cb_list,
-						  NULL,
-						  rdev, rdev, true);
+		return rswitch_setup_tc_block(rdev, type_data);
+//		return flow_block_cb_setup_simple(type_data,
+//						  &rswitch_block_cb_list,
+//						  NULL,
+//						  rdev, rdev, true);
 	default:
 		return -EOPNOTSUPP;
 	}
