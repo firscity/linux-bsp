@@ -2642,12 +2642,107 @@ out:
 	return err;
 }
 
+static int rswitch_set_iproute(struct rswitch_private *priv)
+{
+	/*
+	 * 31:17 - RSV reserved
+	 * 16    - IPED - (IP Entry Delete) 1’b0: Learn/overwrite the set IP address in IP table, 1’b1: Delete the set IP address in IP table.
+	 * 15:11 - RSV reserved
+	 * 10    - IPHLDL - (IP Hardware Learning Disable Learn) SW: Used for learning/overwriting an entry in IP table.
+	 * 9     - IPDEL - (IP Dynamic Entry Learn) SW: Used for learning/overwriting an entry in IP table.
+	 * 8     - IPSLL - (IP Security Level Learn) SW: Used for learning/overwriting an entry in IP table.
+	 * 7:1   - RSV reserved
+	 * 0     - IPIPTL - (IP IP Type Learn) SW: Used for learning/overwriting an entry in IP table.
+	 */
+	rs_write32(BIT(0) | BIT(8) | BIT(9) | BIT(10), priv->addr + FWIPTL0);
+
+	/* 
+	 * EV(1)           - Entry valid (1’b1: - valid)
+	 * CB(1)           - Collision bit (1’b1: Entry is a collision entry (The entry is not written at its Hash ID address))
+	 * CRPV(1)         - Collision Resolution Pointer Valid (1’b0: Pointer is not valid (After this entry, there is no other entry with the same Hash ID))
+	 * CRP(IP_ENTRY_W) - Collision Resolution Pointer If corresponding entry IP.CRPV value is set to 1, this field points to the address where the
+                         next entry will the same Hash ID is stored)
+	 * SL(1)           - Security Level (1’b1: Entry is secure)
+	 * IP(128)         - IP address of the entry. The IP address is extracted by IP extract (refer to section 8.2.5.1)
+	 * IPT(1)          - IP Type (1’b0: The address IP.IP is an IPv4 address)
+	 * HLD(1)          - Hardware Learn Disable (1’b0: Source IP hardware learning is enabled for frames containing IP.IP as destination IP
+                         address.)
+	 * RV(1)           - Routing Valid (1’b1: Frames matching this entry will be processed by routing. LINK)
+	 * RN(LTH_RRULE_W) - Routing Number (HW: If corresponding entry IP.RV value is set to 1, frames matching this entry will be
+                         processed by routing rule number IP.RN.)
+	 * DSLV(PORT_N)    - Destination Source Lock Vector (Bit i set to 1’b1: Frames with a destination IP matching this entry coming from port i are
+                         forwarded/routed.)
+	 * SSLV(PORT_N)    - Source Source Lock Vector (Bit i set to 1’b1: Frames with a source IP matching this entry coming from port i are
+                         forwarded/routed.)
+	 * DV(PORT_N)      - Destination vector
+	 * CSD(PORT_GWCA_N*CPU_SUB_W) - CPU Sub-Destinations
+	 * CME(1)          - CPU Mirroring Enable (1’b1: CPU mirroring is enabled.)
+	 * EME(1)          - Ethernet Mirroring Enable (1’b1: Ethernet mirroring is enabled.)
+	 * IPU(1)          - Internal Priority Update (1’b1: Frames matching this entry will have their internal priority updated.)
+	 * IPV(3)          - Internal Priority Value (If corresponding entry IP.IPU value is set to 1, frames matching this entry will have their
+                         priority updated to IP.IPV.)
+	 * DE(1)           - Dynamic Entry (1’b1: Entry is dynamic. Migration and aging can be applied to the entry.)
+	 * AB(1)           - Aging Bit (1’b0: Entry hasn’t been searched as an IP source address by forwarding mechanism since
+                         previous aging. The entry should be deleted during next aging if it is not searched as an IP
+                         source address by forwarding mechanism before)
+	 */
+	u32 rule_format = 
+
+	// Refer to section 8.2.5(1). Rule format
+	/*
+	 * 31:0  - IPIPLP0 - (IP IP address Learn Part 0) SW: Used for learning/overwriting an entry in IP table. 
+	 */
+	//TODO: add ip
+	rs_write32(0, priv->addr + FWIPTL1);
+
+	/*
+	 * 31:0  - IPIPLP1 - (IP IP address Learn Part 1) SW: Used for learning/overwriting an entry in IP table. 
+	 */
+	//TODO: add ip
+	rs_write32(0, priv->addr + FWIPTL2);
+
+	/*
+	 * 31:0  - IPIPLP2 - (IP IP address Learn Part 2) SW: Used for learning/overwriting an entry in IP table. 
+	 */
+	//TODO: add ip
+	rs_write32(0, priv->addr + FWIPTL3);
+
+	/*
+	 * 31:0  - IPIPLP3 - (IP IP address Learn Part 3) SW: Used for learning/overwriting an entry in IP table. 
+	 */
+	//TODO: add ip
+	rs_write32(0, priv->addr + FWIPTL4);
+
+	/*
+	 * 31: PORT_N+16   - RSV reserved
+	 * PORT_N+15:16    - IPDSLVL - (IP Destination Source Lock Vector Learn) 
+	 * 15              - IPRVL - (IP Routing Valid Learn)
+	 * 14: LTH_RRULE_W - RSV reserved
+	 * LTH_RRULE_W-1:0 - (IP Routing Number Learn)
+	 */
+	//TODO: add config
+	rs_write32(0, priv->addr + FWIPTL5);
+
+	/*
+	 * 31: AXI_CHAIN_W   - RSV reserved
+	 * AXI_CHAIN_W-1:0   - IPCSDLi - (IP CPU Sub-Destination Learn i) 
+	 */
+	//TODO: add config
+	rs_write32(0, priv->addr + FWIPTL7);
+
+	// Check FWIPTLR.IPTL == 0
+	return rswitch_reg_wait(priv->addr, FWIPTLR, BIT(31), 0);
+}
+
 static void rswitch_router_fib_event_work(struct work_struct *work)
 {
 	struct rswitch_fib_event_work *fib_work =
 		container_of(work, struct rswitch_fib_event_work, work);
+	struct fib_entry_notifier_info fen = fib_work->fen_info;
 
 	pr_err("WQ run\n");
+	pr_err("%s %d dst = 0x%x dst_len = %d type = 0x%x tos = 0x%x\n", __func__, __LINE__, fen.dst, fen.dst_len, fen.type, fen.tos);
+
 
 	/* Protect internal structures from changes */
 	rtnl_lock();
