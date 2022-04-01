@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <net/rtnetlink.h>
+#include <net/nexthop.h>
 
 #include "rswitch_ptp.h"
 #include "rswitch.h"
@@ -771,6 +772,37 @@ enum rswitch_etha_mode {
 #define FWPC0_MACHLA	BIT(26)
 #define FWPC0_MACHMA	BIT(27)
 #define FWPC0_VLANSA	BIT(28)
+
+//Delete
+#define LTHED (BIT(16))
+//Security bit
+#define LTHSLL (BIT(8))
+#define LTHSLP0v4 (1)
+#define LTHSLP0v6 (6)
+//L3 Source Lock Vector Learn
+#define LTHSLVL (BIT(16) | BIT(17) | BIT(18) | BIT(19) | BIT(20) | BIT(21) | BIT(22))
+//L3 Routing Valid Learn
+#define LTHRVL (BIT(15))
+//L3 Routing Number Learn
+#define LTHRNL (BIT(0))
+//L3 CPU Sub-Destination Learn i
+#define LTHCSDL (BIT(0))
+//L3 Destination Vector Learn
+#define LTHDVL (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(7))
+//L3 Internal Priority Value Learn
+#define LTHIPVL (BIT(16) | BIT(17) | BIT(18))
+//L3 Internal Priority Update Learn
+#define LTHIPUL (BIT(19))
+//L3 Ethernet Mirroring Enable Learn
+#define LTHEMEL (BIT(20))
+//L3 CPU Mirroring Enable Learn
+#define LTHCMEL (BIT(21))
+#define LTHTL (BIT(31))
+#define LTHTS (BIT(31))
+//IPv4 Include IP Destination in Hash
+#define IP4IIDH (BIT(9))
+#define LTHTIOG (BIT(0))
+#define LTHTR (BIT(1))
 
 #define FWPC0_DEFAULT	(FWPC0_LTHTA | FWPC0_IP4UE | FWPC0_IP4TE | \
 			 FWPC0_IP4OE | FWPC0_L2SE | FWPC0_IP4EA | \
@@ -2582,11 +2614,14 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 		rs_write32(priv->rdev[i]->rx_chain->index, priv->addr + FWPBFCSDC(0, i));
 		rs_write32(8, priv->addr + FWPBFC(i));
 	}
-	rs_write32(0x07, priv->addr + FWPBFC(3));
+	rs_write32(0x7, priv->addr + FWPBFC(3));
 
+	rs_write32(FWPC0_DEFAULT, priv->addr + FWPC00 + (3 * 0x10));
+	rs_write32(0, priv->addr + FWPC10 + (3 * 0x10));
+	rs_write32(0, priv->addr + FWPC20 + (3 * 0x10));
 
 	/* Enable Direct Descriptors for GWCA0 */
-	rs_write32(FWPC1_DDE, priv->addr + FWPC10 + (3 * 0x10));
+	//rs_write32(FWPC1_DDE, priv->addr + FWPC10 + (3 * 0x10));
 	/* TODO: add chrdev for fwd */
 	/* TODO: add proc for fwd */
 }
@@ -2627,6 +2662,8 @@ static int rswitch_init(struct rswitch_private *priv)
 
 	rswitch_fwd_init(priv);
 
+	rs_write32(0x7FF03FF, priv->addr + FWIPHEC);
+
 	err = rswitch_request_irqs(priv);
 	if (err < 0)
 		goto out;
@@ -2642,96 +2679,115 @@ out:
 	return err;
 }
 
-static int rswitch_set_iproute(struct rswitch_private *priv)
+int rswitch_setup_l23_update(struct l23_update_info *l23_info)
 {
-	/*
-	 * 31:17 - RSV reserved
-	 * 16    - IPED - (IP Entry Delete) 1’b0: Learn/overwrite the set IP address in IP table, 1’b1: Delete the set IP address in IP table.
-	 * 15:11 - RSV reserved
-	 * 10    - IPHLDL - (IP Hardware Learning Disable Learn) SW: Used for learning/overwriting an entry in IP table.
-	 * 9     - IPDEL - (IP Dynamic Entry Learn) SW: Used for learning/overwriting an entry in IP table.
-	 * 8     - IPSLL - (IP Security Level Learn) SW: Used for learning/overwriting an entry in IP table.
-	 * 7:1   - RSV reserved
-	 * 0     - IPIPTL - (IP IP Type Learn) SW: Used for learning/overwriting an entry in IP table.
-	 */
-	rs_write32(BIT(0) | BIT(8) | BIT(9) | BIT(10), priv->addr + FWIPTL0);
+	//Update routing number and port valid
+	rs_write32(l23_info->routing_number | l23_info->routing_port_valid << 16, l23_info->priv->addr + FWL23URL0);
+	//Update MAC
+	rs_write32(l23_info->dst_mac[0] << 8 | l23_info->dst_mac[1] | BIT(17), l23_info->priv->addr + FWL23URL1);
+	rs_write32(l23_info->dst_mac[2] << 24 | l23_info->dst_mac[3] << 16 | l23_info->dst_mac[4] << 8 | l23_info->dst_mac[5],
+		l23_info->priv->addr + FWL23URL2);
+	rs_write32(0, l23_info->priv->addr + FWL23URL3);
 
-	/* 
-	 * EV(1)           - Entry valid (1’b1: - valid)
-	 * CB(1)           - Collision bit (1’b1: Entry is a collision entry (The entry is not written at its Hash ID address))
-	 * CRPV(1)         - Collision Resolution Pointer Valid (1’b0: Pointer is not valid (After this entry, there is no other entry with the same Hash ID))
-	 * CRP(IP_ENTRY_W) - Collision Resolution Pointer If corresponding entry IP.CRPV value is set to 1, this field points to the address where the
-                         next entry will the same Hash ID is stored)
-	 * SL(1)           - Security Level (1’b1: Entry is secure)
-	 * IP(128)         - IP address of the entry. The IP address is extracted by IP extract (refer to section 8.2.5.1)
-	 * IPT(1)          - IP Type (1’b0: The address IP.IP is an IPv4 address)
-	 * HLD(1)          - Hardware Learn Disable (1’b0: Source IP hardware learning is enabled for frames containing IP.IP as destination IP
-                         address.)
-	 * RV(1)           - Routing Valid (1’b1: Frames matching this entry will be processed by routing. LINK)
-	 * RN(LTH_RRULE_W) - Routing Number (HW: If corresponding entry IP.RV value is set to 1, frames matching this entry will be
-                         processed by routing rule number IP.RN.)
-	 * DSLV(PORT_N)    - Destination Source Lock Vector (Bit i set to 1’b1: Frames with a destination IP matching this entry coming from port i are
-                         forwarded/routed.)
-	 * SSLV(PORT_N)    - Source Source Lock Vector (Bit i set to 1’b1: Frames with a source IP matching this entry coming from port i are
-                         forwarded/routed.)
-	 * DV(PORT_N)      - Destination vector
-	 * CSD(PORT_GWCA_N*CPU_SUB_W) - CPU Sub-Destinations
-	 * CME(1)          - CPU Mirroring Enable (1’b1: CPU mirroring is enabled.)
-	 * EME(1)          - Ethernet Mirroring Enable (1’b1: Ethernet mirroring is enabled.)
-	 * IPU(1)          - Internal Priority Update (1’b1: Frames matching this entry will have their internal priority updated.)
-	 * IPV(3)          - Internal Priority Value (If corresponding entry IP.IPU value is set to 1, frames matching this entry will have their
-                         priority updated to IP.IPV.)
-	 * DE(1)           - Dynamic Entry (1’b1: Entry is dynamic. Migration and aging can be applied to the entry.)
-	 * AB(1)           - Aging Bit (1’b0: Entry hasn’t been searched as an IP source address by forwarding mechanism since
-                         previous aging. The entry should be deleted during next aging if it is not searched as an IP
-                         source address by forwarding mechanism before)
-	 */
-	u32 rule_format = 
+	pr_err("%s %d FWL23URLR = 0x%x\n", __func__, __LINE__, rs_read32(l23_info->priv->addr + FWL23URLR));
 
-	// Refer to section 8.2.5(1). Rule format
-	/*
-	 * 31:0  - IPIPLP0 - (IP IP address Learn Part 0) SW: Used for learning/overwriting an entry in IP table. 
-	 */
-	//TODO: add ip
-	rs_write32(0, priv->addr + FWIPTL1);
+	return 0;
+}
+
+int rswitch_set_l3fwd_ports(struct l3_ipv4_fwd_param *param)
+{
+	struct rswitch_private *priv = param->priv;
+	static u32 routing_number = 1;
+
+	param->l23_info.routing_number = routing_number;
+
+	if (param->l23_info.update_dst_mac || param->l23_info.update_src_mac || param->l23_info.update_ttl)
+		rswitch_setup_l23_update(&param->l23_info);
+
+	rs_write32(LTHSLP0v4, priv->addr + FWLTHTL0);
+	rs_write32(0, priv->addr + FWLTHTL1);
+	rs_write32(0, priv->addr + FWLTHTL2);
+	rs_write32(param->src_ip, priv->addr + FWLTHTL3);
+	rs_write32(param->dst_ip, priv->addr + FWLTHTL4);
+
+	rs_write32(0, priv->addr + FWLTHTL5);
+	rs_write32(0, priv->addr + FWLTHTL6);
+	//SLV
+	rs_write32(routing_number | BIT(15) | param->slv << 16, priv->addr + FWLTHTL7);
+	//CSD - remotechain - rx
+	rs_write32(param->csd, priv->addr + FWLTHTL80);
+	//DV
+	rs_write32(param->dv, priv->addr + FWLTHTL9);
+
+	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0));
 
 	/*
-	 * 31:0  - IPIPLP1 - (IP IP address Learn Part 1) SW: Used for learning/overwriting an entry in IP table. 
-	 */
-	//TODO: add ip
-	rs_write32(0, priv->addr + FWIPTL2);
+	- The learn entry is not yet in the table and the table is already full (FWLTHTEM.LTHTEN == LTH_STREAM_N).
+	- The Layer 3 table is not ready (FWLTHTIM.LTHTR is not set)
+	- The learning function is used to delete an entry (FWLTHTL0.LTHED set for learning) and the entry is not found in the layer3 table)
+	*/
+	pr_err("%s %d 0 FWLTHTLR = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTLR));
+	pr_err("%s %d 0 FWLTHTIM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTIM));
+	pr_err("%s %d 0 FWLTHTEM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTEM));
+
+	routing_number++;
+
+	return 0;
+}
+
+int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
+{
+	struct rswitch_private *priv = fib_work->pdev;
+	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
+	u32 src_addr = be32_to_cpu(nh->nh_saddr);
+	static u32 routing_number = 0;
+
+	rs_write32(LTHSLP0v4 | LTHSLL, priv->addr + FWLTHTL0);
+	rs_write32(0, priv->addr + FWLTHTL1);
+	rs_write32(0, priv->addr + FWLTHTL2);
+	rs_write32(src_addr, priv->addr + FWLTHTL3);
+	rs_write32(fib_work->fen_info.dst, priv->addr + FWLTHTL4);
+
+	rs_write32(0, priv->addr + FWLTHTL5);
+	rs_write32(0, priv->addr + FWLTHTL6);
+	rs_write32(LTHRVL | LTHSLVL, priv->addr + FWLTHTL7);
+	rs_write32(LTHCSDL, priv->addr + FWLTHTL80);
+	rs_write32(LTHDVL | LTHIPVL | LTHIPUL | LTHEMEL | LTHCMEL, priv->addr + FWLTHTL9);
+
+	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0));
 
 	/*
-	 * 31:0  - IPIPLP2 - (IP IP address Learn Part 2) SW: Used for learning/overwriting an entry in IP table. 
-	 */
-	//TODO: add ip
-	rs_write32(0, priv->addr + FWIPTL3);
+	- The learn entry is not yet in the table and the table is already full (FWLTHTEM.LTHTEN == LTH_STREAM_N).
+	- The Layer 3 table is not ready (FWLTHTIM.LTHTR is not set)
+	- The learning function is used to delete an entry (FWLTHTL0.LTHED set for learning) and the entry is not found in the layer3 table)
+	*/
+	pr_err("%s %d 0 FWLTHTLR = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTLR));
+	pr_err("%s %d 0 FWLTHTIM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTIM));
+	pr_err("%s %d 0 FWLTHTEM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTEM));
 
-	/*
-	 * 31:0  - IPIPLP3 - (IP IP address Learn Part 3) SW: Used for learning/overwriting an entry in IP table. 
-	 */
-	//TODO: add ip
-	rs_write32(0, priv->addr + FWIPTL4);
+	routing_number++;
 
-	/*
-	 * 31: PORT_N+16   - RSV reserved
-	 * PORT_N+15:16    - IPDSLVL - (IP Destination Source Lock Vector Learn) 
-	 * 15              - IPRVL - (IP Routing Valid Learn)
-	 * 14: LTH_RRULE_W - RSV reserved
-	 * LTH_RRULE_W-1:0 - (IP Routing Number Learn)
-	 */
-	//TODO: add config
-	rs_write32(0, priv->addr + FWIPTL5);
+	return 0;
+}
 
-	/*
-	 * 31: AXI_CHAIN_W   - RSV reserved
-	 * AXI_CHAIN_W-1:0   - IPCSDLi - (IP CPU Sub-Destination Learn i) 
-	 */
-	//TODO: add config
-	rs_write32(0, priv->addr + FWIPTL7);
+static void rswitch_search_l3fwd(struct rswitch_fib_event_work *fib_work)
+{
+	struct rswitch_private *priv = fib_work->pdev;
+	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
+	u32 src_addr = be32_to_cpu(nh->nh_saddr);
 
-	// Check FWIPTLR.IPTL == 0
-	return rswitch_reg_wait(priv->addr, FWIPTLR, BIT(31), 0);
+	rs_write32(LTHSLP0v4, priv->addr + FWLTHTS0);
+	rs_write32(0, priv->addr + FWLTHTS1);
+	rs_write32(0, priv->addr + FWLTHTS2);
+	rs_write32(src_addr, priv->addr + FWLTHTS3);
+	rs_write32(fib_work->fen_info.dst, priv->addr + FWLTHTS4);
+
+	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTSR0, LTHTS, 0));
+	pr_err("%s %d FWLTHTSR0 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR0));
+	pr_err("%s %d FWLTHTSR1 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR1));
+	pr_err("%s %d FWLTHTSR2 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR2));
+	pr_err("%s %d FWLTHTSR3 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR3));
+	pr_err("%s %d FWLTHTSR40 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR40));
 }
 
 static void rswitch_router_fib_event_work(struct work_struct *work)
@@ -2739,30 +2795,44 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 	struct rswitch_fib_event_work *fib_work =
 		container_of(work, struct rswitch_fib_event_work, work);
 	struct fib_entry_notifier_info fen = fib_work->fen_info;
+	struct fib_nh *nh = NULL;
 
-	pr_err("WQ run\n");
-	pr_err("%s %d dst = 0x%x dst_len = %d type = 0x%x tos = 0x%x\n", __func__, __LINE__, fen.dst, fen.dst_len, fen.type, fen.tos);
 
+	if (!fib_work->fen_info.fi) {
+		goto free;
+	}
+
+	nh = fib_info_nh(fen.fi, 0);
+
+	pr_err("%s %d dst = %u.%u.%u.%u dst_len = %d type = 0x%x tos = 0x%x id = 0x%x\n", __func__, __LINE__, (fen.dst & 0xff000000) >> 24,
+		(fen.dst & 0xff0000) >> 16, (fen.dst & 0xff00) >> 8, fen.dst & 0xff, fen.dst_len, fen.type, fen.tos, fen.tb_id);
+
+	pr_err("%s %d nh_saddr = %u.%u.%u.%u\n", __func__, __LINE__, nh->nh_saddr & 0xff,
+		(nh->nh_saddr & 0xff00) >> 8, (nh->nh_saddr & 0xff0000) >> 16, (nh->nh_saddr & 0xff000000) >> 24);
+
+	if (fen.dst_len != 32) {
+		goto free;
+	}
 
 	/* Protect internal structures from changes */
 	rtnl_lock();
 	switch (fib_work->event) {
 	case FIB_EVENT_ENTRY_REPLACE:
-		pr_err("%s %d FIB_EVENT_ENTRY_REPLACE REPLACE\n", __func__, __LINE__);
+		rswitch_set_l3fwd(fib_work);
+		rswitch_search_l3fwd(fib_work);
 		fib_info_put(fib_work->fen_info.fi);
 		break;
 	case FIB_EVENT_ENTRY_DEL:
-		pr_err("%s %d FIB_EVENT_ENTRY_DEL REPLACE\n", __func__, __LINE__);
 		fib_info_put(fib_work->fen_info.fi);
 		break;
 	case FIB_EVENT_RULE_ADD:
-		pr_err("%s %d FIB_EVENT_RULE_ADD REPLACE\n", __func__, __LINE__);
 		break;
 	case FIB_EVENT_RULE_DEL:
-		pr_err("%s %d FIB_EVENT_RULE_DEL REPLACE\n", __func__, __LINE__);
 		break;
 	}
+
 	rtnl_unlock();
+free:
 	kfree(fib_work);
 }
 
@@ -2775,7 +2845,6 @@ static int rswitch_fib_event(struct notifier_block *nb,
 	struct rswitch_fib_event_work *fib_work;
 
 	pr_err("%s %d event = 0x%lx, family = 0x%x\n", __func__, __LINE__, event, info->family);
-	//dump_stack();
 
 	if (info->family != AF_INET)
 		return NOTIFY_DONE;
@@ -2785,6 +2854,7 @@ static int rswitch_fib_event(struct notifier_block *nb,
 		return NOTIFY_BAD;
 
 	fib_work->event = event;
+	fib_work->pdev = pdev;
 
 	INIT_WORK(&fib_work->work, rswitch_router_fib_event_work);
 
@@ -2818,10 +2888,21 @@ static int rswitch_fib_event(struct notifier_block *nb,
 		break;
 	}
 
-	//pr_err("queue work\n");
 	queue_work(pdev->rswitch_fib_wq, &fib_work->work);
 
 	return NOTIFY_DONE;
+}
+
+static void rswitch_reset_l3_table(struct rswitch_private *priv)
+{
+	rs_write32(LTHTIOG, priv->addr + FWLTHTIM);
+	rswitch_reg_wait(priv->addr, FWLTHTIM, LTHTR, 1);
+}
+
+static void rswitch_reset_l23_table(struct rswitch_private *priv)
+{
+	rs_write32(LTHTIOG, priv->addr + FWL23UTIM);
+	rswitch_reg_wait(priv->addr, FWL23UTIM, BIT(1), 1);
 }
 
 static void rswitch_deinit_rdev(struct rswitch_private *priv, int index)
@@ -2847,11 +2928,49 @@ static void rswitch_deinit(struct rswitch_private *priv)
 	rswitch_desc_free(priv);
 }
 
+static void rswitch_l23_enable_unsecure_access(struct rswitch_private *priv)
+{
+	rs_write32(0xffffffff, priv->addr + FWSCR34);
+}
+
+static void rswitch_init_hash_param(struct rswitch_private *priv)
+{
+	rs_write32(BIT(22) | BIT(23), priv->addr + FWIP4SC);
+}
+
+#define MSEC_DWQ_DELAY (10000)
+
+void counter_print(struct work_struct *work)  
+{
+    struct rswitch_private *priv = container_of(to_delayed_work(work),
+				struct rswitch_private, ctr_dwq);
+	int i;
+
+	for (i = 0; i < 5; i++) {
+		pr_err("%s %d rs_read32(priv->addr + FWEIS0%d) = 0x%x\n", __func__, __LINE__, i, rs_read32(priv->addr + FWEIS00 + i * 0x10));
+		pr_err("%s %d rs_read32(priv->addr + FWLTHFDCN0%d) = 0x%x\n", __func__, __LINE__, i, rs_read32(priv->addr + FWLTHFDCN0 + i * 0x10));
+		pr_err("%s %d rs_read32(priv->addr + FWLTHRDCN0%d) = 0x%x\n", __func__, __LINE__, i, rs_read32(priv->addr + FWLTHRDCN0 + i * 0x10));
+	}
+
+	pr_err("%s %d rs_read32(priv->addr + FWEIS1) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIS1));
+	pr_err("%s %d rs_read32(priv->addr + FWEIS2) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIS2));
+	pr_err("%s %d rs_read32(priv->addr + FWEIE1) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIE1));
+	pr_err("%s %d rs_read32(priv->addr + FWEIE2) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIE2));
+
+	queue_delayed_work(priv->ctr_monitoring_wq, &priv->ctr_dwq, msecs_to_jiffies(MSEC_DWQ_DELAY));
+}
+
+static void renesas_disable_hash_equation(struct rswitch_private *priv)
+{
+	rs_write32(0, priv->addr + FWSFHEC);
+}
+
 static int renesas_eth_sw_probe(struct platform_device *pdev)
 {
 	struct rswitch_private *priv;
 	struct resource *res, *res_serdes;
 	int ret;
+	int i;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	res_serdes = platform_get_resource(pdev, IORESOURCE_MEM, 1);
@@ -2917,22 +3036,41 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 
 	rswitch_init(priv);
 
+	rs_write32(0x200 << 16, priv->addr + FWLTHHEC);
+
 	rswitch_xen_ndev_register(priv, 0);
 	rswitch_xen_ndev_register(priv, 1);
-	pr_err("%s %d\n", __func__, __LINE__);
-	//rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
+	renesas_disable_hash_equation(priv);
+
+	rswitch_l23_enable_unsecure_access(priv);
+	rswitch_init_hash_param(priv);
+	rswitch_reset_l3_table(priv);
+	rswitch_reset_l23_table(priv);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
 
-	priv->fib_nb.notifier_call = rswitch_fib_event;
-	ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
-	if (ret) {
-		pr_err("%s %d error = %d\n", __func__, __LINE__, ret);
-	} else {
-		pr_err("%s %d SUCCESS\n", __func__, __LINE__);
-	}
+#define RDEV_HOST_IP (0xC0A80164)
+#define RDEV0_IP (0xC0A80101)
+#define RDEV3_IP (0xC0A80202)
+#define RDEV4_IP (0xC0A80201)
 
-	return 0;
+	rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[3], RDEV_HOST_IP, RDEV3_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[3], RDEV0_IP, RDEV3_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[4], priv->rdev[3], RDEV4_IP, RDEV3_IP, 1);
+
+	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[0], RDEV3_IP, RDEV_HOST_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[0], RDEV3_IP, RDEV0_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV4_IP, 1);
+
+	priv->ctr_monitoring_wq = create_workqueue("counter_check");
+	INIT_DELAYED_WORK(&priv->ctr_dwq, counter_print);
+
+	queue_delayed_work(priv->ctr_monitoring_wq, &priv->ctr_dwq, msecs_to_jiffies(MSEC_DWQ_DELAY));
+
+	//priv->fib_nb.notifier_call = rswitch_fib_event;
+	//ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
+
+	return ret;
 }
 
 static int renesas_eth_sw_remove(struct platform_device *pdev)

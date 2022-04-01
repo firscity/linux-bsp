@@ -13,6 +13,14 @@
 #include <net/fib_notifier.h>
 #include <net/ip_fib.h>
 
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/proc_fs.h>
+#include <linux/workqueue.h>
+#include <linux/sched.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+
 static inline u32 rs_read32(void *addr)
 {
 	return ioread32(addr);
@@ -206,6 +214,9 @@ struct rswitch_private {
 
 	struct clk *rsw_clk;
 	struct clk *phy_clk;
+
+	struct workqueue_struct *ctr_monitoring_wq;
+	struct delayed_work ctr_dwq;
 };
 
 struct rswitch_fib_event_work {
@@ -214,8 +225,31 @@ struct rswitch_fib_event_work {
 		struct fib_entry_notifier_info fen_info;
 		struct fib_rule_notifier_info fr_info;
 	};
-	//struct rswitch_device *rswitch;
+	struct rswitch_private *pdev;
 	unsigned long event;
+};
+
+struct l23_update_info {
+	struct rswitch_private *priv;
+	u8 *dst_mac;
+	u32 routing_port_valid;
+	u32 routing_number;
+	u8 update_dst_mac;
+	u8 update_src_mac;
+	u8 update_ttl;
+};
+
+struct l3_ipv4_fwd_param {
+	struct rswitch_private *priv;
+	struct l23_update_info l23_info;
+	u32 src_ip;
+	u32 dst_ip;
+	// CPU sub destination
+	u32 csd;
+	// Destination vector
+	u32 dv;
+	// Source lock vector
+	u32 slv;
 };
 
 extern const struct net_device_ops rswitch_netdev_ops;
@@ -230,4 +264,6 @@ int rswitch_poll(struct napi_struct *napi, int budget);
 
 int rswitch_xen_ndev_register(struct rswitch_private *priv, int index);
 int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
-			     struct rswitch_device *rdev2);
+			     struct rswitch_device *rdev2, u32 ip_1, u32 ip_2, int update_mac);
+
+int rswitch_set_l3fwd_ports(struct l3_ipv4_fwd_param *param);
