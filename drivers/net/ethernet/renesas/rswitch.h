@@ -214,7 +214,7 @@ struct rswitch_fib_event_work {
 		struct fib_entry_notifier_info fen_info;
 		struct fib_rule_notifier_info fr_info;
 	};
-	//struct rswitch_device *rswitch;
+	struct rswitch_private *pdev;
 	unsigned long event;
 };
 
