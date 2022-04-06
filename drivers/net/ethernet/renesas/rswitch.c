@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <net/rtnetlink.h>
+#include <net/nexthop.h>
 
 #include "rswitch_ptp.h"
 #include "rswitch.h"
@@ -2650,15 +2651,12 @@ out:
 	return err;
 }
 
+#if 0
+
 static int rswitch_set_iproute(struct rswitch_fib_event_work *fib_work)
 {
 	struct rswitch_private *priv = fib_work->pdev;
 	static int flag = 0;
-
-	if (flag) {
-		return 0;
-	}
-	flag = 1;
 
 	/*
 	 * 31:17 - RSV reserved
@@ -2781,10 +2779,15 @@ static void rswitch_search_iproute(struct rswitch_fib_event_work *fib_work)
 	pr_err("%s %d 2 res = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWIPTSR2));
 	pr_err("%s %d 3 res = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWIPTSR3));
 }
+#endif
 
 static int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 {
 	struct rswitch_private *priv = fib_work->pdev;
+	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
+	u32 src_addr = be32_to_cpu(nh->nh_saddr);
+
+	pr_err("%s %d src = 0x%x\n", __func__, __LINE__, src_addr);
 
 //Delete
 #define LTHED (BIT(16))
@@ -2797,14 +2800,12 @@ static int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 	//TODO: add config
 	rs_write32(0, priv->addr + FWLTHTL1);
 	rs_write32(0, priv->addr + FWLTHTL2);
-	//TODO: add ip
-	//192.168.2.2
-	rs_write32(0xC0A80202, priv->addr + FWLTHTL3);
+	rs_write32(src_addr, priv->addr + FWLTHTL3);
 	rs_write32(fib_work->fen_info.dst, priv->addr + FWLTHTL4);
 
-//Filters
+	//Filters
 	rs_write32(0, priv->addr + FWLTHTL5);
-//Filters
+	//Filters
 	rs_write32(0, priv->addr + FWLTHTL6);
 
 //L3 Source Lock Vector Learn
@@ -2849,21 +2850,23 @@ static int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 static void rswitch_search_l3fwd(struct rswitch_fib_event_work *fib_work)
 {
 	struct rswitch_private *priv = fib_work->pdev;
+	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
+	u32 src_addr = be32_to_cpu(nh->nh_saddr);
 
 	rs_write32(4, priv->addr + FWLTHTS0);
 	rs_write32(0, priv->addr + FWLTHTS1);
 	rs_write32(0, priv->addr + FWLTHTS2);
-	rs_write32(0xC0A80202, priv->addr + FWLTHTS3);
+	rs_write32(src_addr, priv->addr + FWLTHTS3);
 	rs_write32(fib_work->fen_info.dst, priv->addr + FWLTHTS4);
 
 #define LTHTS (BIT(31))
 	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTSR0, LTHTS, 0));
 
-	pr_err("%s %d 0 FWLTHTSR0 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR0));
-	pr_err("%s %d 0 FWLTHTSR1 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR1));
-	pr_err("%s %d 1 FWLTHTSR2 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR2));
-	pr_err("%s %d 2 FWLTHTSR3 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR3));
-	pr_err("%s %d 3 FWLTHTSR40 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR40));
+	pr_err("%s %d FWLTHTSR0 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR0));
+	pr_err("%s %d FWLTHTSR1 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR1));
+	pr_err("%s %d FWLTHTSR2 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR2));
+	pr_err("%s %d FWLTHTSR3 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR3));
+	pr_err("%s %d FWLTHTSR40 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR40));
 }
 
 static void rswitch_router_fib_event_work(struct work_struct *work)
@@ -2871,8 +2874,13 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 	struct rswitch_fib_event_work *fib_work =
 		container_of(work, struct rswitch_fib_event_work, work);
 	struct fib_entry_notifier_info fen = fib_work->fen_info;
+	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
 
-	pr_err("%s %d dst = 0x%x dst_len = %d type = 0x%x tos = 0x%x\n", __func__, __LINE__, fen.dst, fen.dst_len, fen.type, fen.tos);
+	pr_err("%s %d dst = %u.%u.%u.%u dst_len = %d type = 0x%x tos = 0x%x id = 0x%x\n", __func__, __LINE__, (fen.dst & 0xff000000) >> 24,
+		(fen.dst & 0xff0000) >> 16, (fen.dst & 0xff00) >> 8, fen.dst & 0xff, fen.dst_len, fen.type, fen.tos, fen.tb_id);
+
+	pr_err("%s %d nh_saddr = %u.%u.%u.%u\n", __func__, __LINE__, nh->nh_saddr & 0xff,
+		(nh->nh_saddr & 0xff00) >> 8, (nh->nh_saddr & 0xff0000) >> 16, (nh->nh_saddr & 0xff000000) >> 24);
 
 	if (fen.dst_len != 32) {
 		goto free;
@@ -2882,9 +2890,6 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 	rtnl_lock();
 	switch (fib_work->event) {
 	case FIB_EVENT_ENTRY_REPLACE:
-		//rswitch_set_iproute(fib_work);
-		//rswitch_read_iproute(fib_work);
-		//rswitch_search_iproute(fib_work);
 		rswitch_set_l3fwd(fib_work);
 		rswitch_search_l3fwd(fib_work);
 		fib_info_put(fib_work->fen_info.fi);
@@ -2993,6 +2998,17 @@ static void rswitch_deinit(struct rswitch_private *priv)
 	rswitch_desc_free(priv);
 }
 
+static void rswitch_init_hash_param(struct rswitch_private *priv)
+{
+	pr_err("%s %d FWIP4SC  = 0x%x", __func__, __LINE__, rs_read32(priv->addr + FWIP4SC));
+//IPv4 Include IP Destination in Hash
+#define IP4IIDH (BIT(9))
+//IPv4 Include IP Source in Hash
+#define IP4IISH (BIT(8))
+	rs_write32(IP4IISH | IP4IIDH, priv->addr + FWIP4SC);
+	pr_err("%s %d FWIP4SC  = 0x%x", __func__, __LINE__, rs_read32(priv->addr + FWIP4SC));
+}
+
 static int renesas_eth_sw_probe(struct platform_device *pdev)
 {
 	struct rswitch_private *priv;
@@ -3069,26 +3085,15 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	pr_err("%s %d\n", __func__, __LINE__);
 	//rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
 
-	pr_err("%s %d FWIP4SC  = 0x%x", __func__, __LINE__, rs_read32(priv->addr + FWIP4SC));
-//IPv4 Include IP Destination in Hash
-#define IP4IIDH (BIT(9))
-//IPv4 Include IP Source in Hash
-#define IP4IISH (BIT(8))
-	rs_write32(IP4IISH | IP4IIDH, priv->addr + FWIP4SC);
-	pr_err("%s %d FWIP4SC  = 0x%x", __func__, __LINE__, rs_read32(priv->addr + FWIP4SC));
+	rswitch_init_hash_param(priv);
 	rswitch_reset_l3_table(priv);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
 
 	priv->fib_nb.notifier_call = rswitch_fib_event;
 	ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
-	if (ret) {
-		pr_err("%s %d error = %d\n", __func__, __LINE__, ret);
-	} else {
-		pr_err("%s %d SUCCESS\n", __func__, __LINE__);
-	}
 
-	return 0;
+	return ret;
 }
 
 static int renesas_eth_sw_remove(struct platform_device *pdev)
