@@ -773,6 +773,33 @@ enum rswitch_etha_mode {
 #define FWPC0_MACHMA	BIT(27)
 #define FWPC0_VLANSA	BIT(28)
 
+//Delete
+#define LTHED (BIT(16))
+//Security bit
+#define LTHSLL (BIT(8))
+#define LTHSLP0v4 (4)
+#define LTHSLP0v6 (6)
+//L3 Source Lock Vector Learn
+#define LTHSLVL (BIT(16) | BIT(17) | BIT(18) | BIT(19) | BIT(20) | BIT(21) | BIT(22))
+//L3 Routing Valid Learn
+#define LTHRVL (BIT(15))
+//L3 Routing Number Learn
+#define LTHRNL (BIT(0))
+//L3 CPU Sub-Destination Learn i
+#define LTHCSDL (BIT(0))
+//L3 Destination Vector Learn
+#define LTHDVL (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(7))
+//L3 Internal Priority Value Learn
+#define LTHIPVL (BIT(16) | BIT(17) | BIT(18))
+//L3 Internal Priority Update Learn
+#define LTHIPUL (BIT(19))
+//L3 Ethernet Mirroring Enable Learn
+#define LTHEMEL (BIT(20))
+//L3 CPU Mirroring Enable Learn
+#define LTHCMEL (BIT(21))
+#define LTHTL (BIT(31))
+#define LTHTS (BIT(31))
+
 #define FWPC0_DEFAULT	(FWPC0_LTHTA | FWPC0_IP4UE | FWPC0_IP4TE | \
 			 FWPC0_IP4OE | FWPC0_L2SE | FWPC0_IP4EA | \
 			 FWPC0_IPDSA | FWPC0_IPHLA | FWPC0_MACSDA | \
@@ -2789,50 +2816,18 @@ static int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 
 	pr_err("%s %d src = 0x%x\n", __func__, __LINE__, src_addr);
 
-//Delete
-#define LTHED (BIT(16))
-//Security
-#define LTHSLL (BIT(8))
-#define LTHSLP0v4 (4)
-#define LTHSLP0v6 (6)
-
 	rs_write32(LTHSLP0v4 | LTHSLL, priv->addr + FWLTHTL0);
-	//TODO: add config
 	rs_write32(0, priv->addr + FWLTHTL1);
 	rs_write32(0, priv->addr + FWLTHTL2);
 	rs_write32(src_addr, priv->addr + FWLTHTL3);
 	rs_write32(fib_work->fen_info.dst, priv->addr + FWLTHTL4);
 
-	//Filters
 	rs_write32(0, priv->addr + FWLTHTL5);
-	//Filters
 	rs_write32(0, priv->addr + FWLTHTL6);
-
-//L3 Source Lock Vector Learn
-#define LTHSLVL (BIT(16) | BIT(17) | BIT(18) | BIT(19) | BIT(20) | BIT(21) | BIT(22))
-//L3 Routing Valid Learn
-#define LTHRVL (BIT(15))
-//L3 Routing Number Learn
-#define LTHRNL (BIT(0))
 	rs_write32(LTHRNL | LTHRVL | LTHSLVL, priv->addr + FWLTHTL7);
-
-//L3 CPU Sub-Destination Learn i
-#define LTHCSDL (BIT(0))
 	rs_write32(LTHCSDL, priv->addr + FWLTHTL80);
-
-//L3 Destination Vector Learn
-#define LTHDVL (BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(7))
-//L3 Internal Priority Value Learn
-#define LTHIPVL (BIT(16) | BIT(17) | BIT(18))
-//L3 Internal Priority Update Learn
-#define LTHIPUL (BIT(19))
-//L3 Ethernet Mirroring Enable Learn
-#define LTHEMEL (BIT(20))
-//L3 CPU Mirroring Enable Learn
-#define LTHCMEL (BIT(21))
 	rs_write32(LTHDVL | LTHIPVL | LTHIPUL | LTHEMEL | LTHCMEL, priv->addr + FWLTHTL9);
 
-#define LTHTL (BIT(31))
 	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0));
 
 	/*
@@ -2853,15 +2848,13 @@ static void rswitch_search_l3fwd(struct rswitch_fib_event_work *fib_work)
 	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
 	u32 src_addr = be32_to_cpu(nh->nh_saddr);
 
-	rs_write32(4, priv->addr + FWLTHTS0);
+	rs_write32(LTHSLP0v4, priv->addr + FWLTHTS0);
 	rs_write32(0, priv->addr + FWLTHTS1);
 	rs_write32(0, priv->addr + FWLTHTS2);
 	rs_write32(src_addr, priv->addr + FWLTHTS3);
 	rs_write32(fib_work->fen_info.dst, priv->addr + FWLTHTS4);
 
-#define LTHTS (BIT(31))
 	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTSR0, LTHTS, 0));
-
 	pr_err("%s %d FWLTHTSR0 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR0));
 	pr_err("%s %d FWLTHTSR1 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR1));
 	pr_err("%s %d FWLTHTSR2 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR2));
