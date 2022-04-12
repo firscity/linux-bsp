@@ -799,6 +799,10 @@ enum rswitch_etha_mode {
 #define LTHCMEL (BIT(21))
 #define LTHTL (BIT(31))
 #define LTHTS (BIT(31))
+//IPv4 Include IP Destination in Hash
+#define IP4IIDH (BIT(9))
+#define LTHTIOG (BIT(0))
+#define LTHTR (BIT(1))
 
 #define FWPC0_DEFAULT	(FWPC0_LTHTA | FWPC0_IP4UE | FWPC0_IP4TE | \
 			 FWPC0_IP4OE | FWPC0_L2SE | FWPC0_IP4EA | \
@@ -883,7 +887,7 @@ static int num_virt_devices = 6;
 module_param(num_virt_devices, int, 0644);
 MODULE_PARM_DESC(num_virt_devices, "Number of virtual interfaces");
 
-#define RSWITCH_TIMEOUT_MS	1000
+#define RSWITCH_TIMEOUT_MS	2000
 static int rswitch_reg_wait(void __iomem *addr, u32 offs, u32 mask, u32 expected)
 {
 	int i;
@@ -2314,6 +2318,8 @@ static struct rswitch_gwca_chain *rswitch_gwca_get(struct rswitch_private *priv)
 	int index;
 
 	index = find_first_zero_bit(priv->gwca.used, priv->gwca.num_chains);
+	//dump_stack();
+	pr_err("%s %d index = %d", __func__, __LINE__, index);
 	if (index >= priv->gwca.num_chains)
 		return NULL;
 	set_bit(index, priv->gwca.used);
@@ -2610,15 +2616,22 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 		rs_write32(priv->rdev[i]->rx_chain->index, priv->addr + FWPBFCSDC(0, i));
 		rs_write32(8, priv->addr + FWPBFC(i));
 	}
-	rs_write32(0x07, priv->addr + FWPBFC(3));
+	rs_write32(0x7F, priv->addr + FWPBFC(3));
 
-	//rs_write32(BIT(10) | BIT(11) | BIT(12) | BIT(18) | BIT(19), priv->addr + FWPC00);
-	//rs_write32(BIT(10) | BIT(11) | BIT(12) | BIT(18) | BIT(19), priv->addr + FWPC10);
-	//rs_write32(BIT(10) | BIT(11) | BIT(12) | BIT(18) | BIT(19), priv->addr + FWPC20);
+	pr_err("%s %d FWPC00 + (3 * 0x10) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWPC00 + (3 * 0x10)));
+	pr_err("%s %d FWPC10 + (3 * 0x10) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWPC10 + (3 * 0x10)));
+	pr_err("%s %d FWPC20 + (3 * 0x10) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWPC20 + (3 * 0x10)));
+	rs_write32(FWPC0_DEFAULT, priv->addr + FWPC00 + (3 * 0x10));
+	rs_write32(0, priv->addr + FWPC10 + (3 * 0x10));
+	rs_write32(0, priv->addr + FWPC20 + (3 * 0x10));
+
+	pr_err("%s %d FWPC00 + (3 * 0x10) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWPC00 + (3 * 0x10)));
+	pr_err("%s %d FWPC10 + (3 * 0x10) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWPC10 + (3 * 0x10)));
+	pr_err("%s %d FWPC20 + (3 * 0x10) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWPC20 + (3 * 0x10)));
 
 
 	/* Enable Direct Descriptors for GWCA0 */
-	rs_write32(FWPC1_DDE, priv->addr + FWPC10 + (3 * 0x10));
+	//rs_write32(FWPC1_DDE, priv->addr + FWPC10 + (3 * 0x10));
 	/* TODO: add chrdev for fwd */
 	/* TODO: add proc for fwd */
 }
@@ -2808,11 +2821,63 @@ static void rswitch_search_iproute(struct rswitch_fib_event_work *fib_work)
 }
 #endif
 
-static int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
+#define RN_MAX (0xff)
+
+int rswitch_set_l3fwd_ports(struct rswitch_private *priv, u32 src_ip, u32 dst_ip, u32 csd)
+{
+	static u32 routing_number = 0;
+
+	if (routing_number >= RN_MAX) {
+		pr_err("Routing number entries is larger than limit (%d)", RN_MAX);
+		//TODO add error code
+		return -1;
+	}
+
+	rs_write32(LTHSLP0v4, priv->addr + FWLTHTL0);
+	rs_write32(0, priv->addr + FWLTHTL1);
+	rs_write32(0, priv->addr + FWLTHTL2);
+	rs_write32(src_ip, priv->addr + FWLTHTL3);
+	rs_write32(dst_ip, priv->addr + FWLTHTL4);
+
+	rs_write32(0, priv->addr + FWLTHTL5);
+	rs_write32(0, priv->addr + FWLTHTL6);
+	//SLV
+	// HACK: hardcoded GWCA0
+	rs_write32(routing_number | LTHRVL | 0x9 << 16, priv->addr + FWLTHTL7);
+	//CSD - remotechain - rx
+	rs_write32(csd, priv->addr + FWLTHTL80);
+	//DV
+	// HACK: hardcoded GWCA0
+	rs_write32(0x8, priv->addr + FWLTHTL9);
+
+	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0));
+
+	/*
+	- The learn entry is not yet in the table and the table is already full (FWLTHTEM.LTHTEN == LTH_STREAM_N).
+	- The Layer 3 table is not ready (FWLTHTIM.LTHTR is not set)
+	- The learning function is used to delete an entry (FWLTHTL0.LTHED set for learning) and the entry is not found in the layer3 table)
+	*/
+	pr_err("%s %d 0 FWLTHTLR = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTLR));
+	pr_err("%s %d 0 FWLTHTIM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTIM));
+	pr_err("%s %d 0 FWLTHTEM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTEM));
+
+	routing_number++;
+
+	return 0;
+}
+
+int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 {
 	struct rswitch_private *priv = fib_work->pdev;
 	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
 	u32 src_addr = be32_to_cpu(nh->nh_saddr);
+	static u32 routing_number = 0;
+
+	if (routing_number >= RN_MAX) {
+		pr_err("Routing number entries is larger than limit (%d)", RN_MAX);
+		//TODO add error code
+		return -1;
+	}
 
 	pr_err("%s %d src = 0x%x\n", __func__, __LINE__, src_addr);
 
@@ -2824,7 +2889,7 @@ static int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 
 	rs_write32(0, priv->addr + FWLTHTL5);
 	rs_write32(0, priv->addr + FWLTHTL6);
-	rs_write32(LTHRNL | LTHRVL | LTHSLVL, priv->addr + FWLTHTL7);
+	rs_write32(routing_number | LTHRVL | LTHSLVL, priv->addr + FWLTHTL7);
 	rs_write32(LTHCSDL, priv->addr + FWLTHTL80);
 	rs_write32(LTHDVL | LTHIPVL | LTHIPUL | LTHEMEL | LTHCMEL, priv->addr + FWLTHTL9);
 
@@ -2838,6 +2903,8 @@ static int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 	pr_err("%s %d 0 FWLTHTLR = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTLR));
 	pr_err("%s %d 0 FWLTHTIM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTIM));
 	pr_err("%s %d 0 FWLTHTEM = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTEM));
+
+	routing_number++;
 
 	return 0;
 }
@@ -2867,7 +2934,14 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 	struct rswitch_fib_event_work *fib_work =
 		container_of(work, struct rswitch_fib_event_work, work);
 	struct fib_entry_notifier_info fen = fib_work->fen_info;
-	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
+	struct fib_nh *nh = NULL;
+
+
+	if (!fib_work->fen_info.fi) {
+		goto free;
+	}
+
+	nh = fib_info_nh(fen.fi, 0);
 
 	pr_err("%s %d dst = %u.%u.%u.%u dst_len = %d type = 0x%x tos = 0x%x id = 0x%x\n", __func__, __LINE__, (fen.dst & 0xff000000) >> 24,
 		(fen.dst & 0xff0000) >> 16, (fen.dst & 0xff00) >> 8, fen.dst & 0xff, fen.dst_len, fen.type, fen.tos, fen.tb_id);
@@ -2896,8 +2970,8 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 		break;
 	}
 
-free:
 	rtnl_unlock();
+free:
 	kfree(fib_work);
 }
 
@@ -2962,9 +3036,7 @@ static int rswitch_fib_event(struct notifier_block *nb,
 
 static void rswitch_reset_l3_table(struct rswitch_private *priv)
 {
-#define LTHTIOG (BIT(0))
 	rs_write32(LTHTIOG, priv->addr + FWLTHTIM);
-#define LTHTR (BIT(1))
 	pr_err("%s %d ret = %d\n", __func__, __LINE__, rswitch_reg_wait(priv->addr, FWLTHTIM, LTHTR, 1));
 }
 
@@ -2994,8 +3066,7 @@ static void rswitch_deinit(struct rswitch_private *priv)
 static void rswitch_init_hash_param(struct rswitch_private *priv)
 {
 	pr_err("%s %d FWIP4SC  = 0x%x", __func__, __LINE__, rs_read32(priv->addr + FWIP4SC));
-//IPv4 Include IP Destination in Hash
-#define IP4IIDH (BIT(9))
+
 //IPv4 Include IP Source in Hash
 #define IP4IISH (BIT(8))
 	rs_write32(IP4IISH | IP4IIDH, priv->addr + FWIP4SC);
@@ -3073,18 +3144,21 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 
 	rswitch_init(priv);
 
+	rs_write32(0x200 << 16, priv->addr + FWLTHHEC);
+
 	rswitch_xen_ndev_register(priv, 0);
 	rswitch_xen_ndev_register(priv, 1);
 	pr_err("%s %d\n", __func__, __LINE__);
-	//rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
+	
 
 	rswitch_init_hash_param(priv);
 	rswitch_reset_l3_table(priv);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
+	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
 
-	priv->fib_nb.notifier_call = rswitch_fib_event;
-	ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
+	//priv->fib_nb.notifier_call = rswitch_fib_event;
+	//ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
 
 	return ret;
 }

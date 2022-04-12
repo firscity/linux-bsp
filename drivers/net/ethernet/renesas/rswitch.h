@@ -231,3 +231,5 @@ int rswitch_poll(struct napi_struct *napi, int budget);
 int rswitch_xen_ndev_register(struct rswitch_private *priv, int index);
 int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
 			     struct rswitch_device *rdev2);
+
+int rswitch_set_l3fwd_ports(struct rswitch_private *priv, u32 src_ip, u32 dst_ip, u32 csd);

@@ -81,8 +81,18 @@ out_reg_netdev:
 int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
 			     struct rswitch_device *rdev2)
 {
-	rdev1->remote_chain = rdev2->rx_chain->index;
-	rdev2->remote_chain = rdev1->rx_chain->index;
+	//rdev1->remote_chain = rdev2->rx_chain->index;
+	//rdev2->remote_chain = rdev1->rx_chain->index;
+
+#if 0
+#define RDEV1_IP (0xC0A80202)
+#define RDEV2_IP (0xC0A80201)
+#else
+#define RDEV1_IP (0x0202A8C0)
+#define RDEV2_IP (0x0102A8C0)
+#endif
+	rswitch_set_l3fwd_ports(rdev1->priv, RDEV1_IP, RDEV2_IP, rdev2->rx_chain->index);
+	rswitch_set_l3fwd_ports(rdev2->priv, RDEV2_IP, RDEV1_IP, rdev1->rx_chain->index);
 
 	return 0;
 }
