@@ -28,7 +28,7 @@ int rswitch_xen_ndev_register(struct rswitch_private *priv, int index)
 	rdev->priv = priv;
 	/* TODO: Fix index calculation */
 	priv->rdev[index + 3] = rdev;
-	rdev->port = 4; 	/* TODO: This is supposed to be GWCA0 port */
+	rdev->port = 3; 	/* TODO: This is supposed to be GWCA0 port */
 	rdev->etha = NULL;
 	rdev->remote_chain = -1;
 
