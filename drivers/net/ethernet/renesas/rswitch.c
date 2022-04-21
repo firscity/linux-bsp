@@ -2701,8 +2701,8 @@ int rswitch_set_l3fwd_ports(struct l3_ipv4_fwd_param *param)
 
 	param->l23_info.routing_number = routing_number;
 
-	if (param->l23_info.update_dst_mac || param->l23_info.update_src_mac || param->l23_info.update_ttl)
-		rswitch_setup_l23_update(&param->l23_info);
+	//if (param->l23_info.update_dst_mac || param->l23_info.update_src_mac || param->l23_info.update_ttl)
+	//	rswitch_setup_l23_update(&param->l23_info);
 
 	rs_write32(LTHSLP0v4, priv->addr + FWLTHTL0);
 	rs_write32(0, priv->addr + FWLTHTL1);
@@ -3054,13 +3054,23 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 #define RDEV3_IP (0xC0A80202)
 #define RDEV4_IP (0xC0A80201)
 
-	rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[3], RDEV_HOST_IP, RDEV3_IP, 1);
-	rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[3], RDEV0_IP, RDEV3_IP, 1);
+
+	// Works vmq0 <--> vmq1 <--> tsn0
+	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV4_IP, 1);
 	rswitch_xen_connect_devs(priv->rdev[4], priv->rdev[3], RDEV4_IP, RDEV3_IP, 1);
 
-	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[0], RDEV3_IP, RDEV_HOST_IP, 1);
-	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[0], RDEV3_IP, RDEV0_IP, 1);
-	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV4_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[4], RDEV0_IP, RDEV4_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[4], priv->rdev[0], RDEV4_IP, RDEV0_IP, 1);
+
+	rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[4], RDEV0_IP, RDEV3_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[4], priv->rdev[0], RDEV3_IP, RDEV0_IP, 1);
+
+	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV0_IP, 1);
+	rswitch_xen_connect_devs(priv->rdev[4], priv->rdev[3], RDEV0_IP, RDEV3_IP, 1);
+
+	// Works for vmq0 <--> tsn0
+	//rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[3], RDEV0_IP, RDEV3_IP, 1);
+	//rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[0], RDEV3_IP, RDEV0_IP, 1);
 
 	priv->ctr_monitoring_wq = create_workqueue("counter_check");
 	INIT_DELAYED_WORK(&priv->ctr_dwq, counter_print);
