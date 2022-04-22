@@ -2742,6 +2742,15 @@ int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 	u32 src_addr = be32_to_cpu(nh->nh_saddr);
 	static u32 routing_number = 0;
 
+	//struct l3_ipv4_fwd_param param = {
+	//	.priv = priv,
+	//	.src_ip = src_ip,
+	//	.dst_ip = dst_ip,
+	//	.dv = BIT(rdev1->port) | BIT(rdev2->port),
+	//	.slv = BIT(rdev1->port) | BIT(rdev2->port),
+	//	.csd = rdev2->rx_chain->index,
+	//};
+
 	rs_write32(LTHSLP0v4 | LTHSLL, priv->addr + FWLTHTL0);
 	rs_write32(0, priv->addr + FWLTHTL1);
 	rs_write32(0, priv->addr + FWLTHTL2);
@@ -2796,30 +2805,20 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 		container_of(work, struct rswitch_fib_event_work, work);
 	struct fib_entry_notifier_info fen = fib_work->fen_info;
 	struct fib_nh *nh = NULL;
-
-
-	if (!fib_work->fen_info.fi) {
-		goto free;
-	}
-
-	nh = fib_info_nh(fen.fi, 0);
-
-	pr_err("%s %d dst = %u.%u.%u.%u dst_len = %d type = 0x%x tos = 0x%x id = 0x%x\n", __func__, __LINE__, (fen.dst & 0xff000000) >> 24,
-		(fen.dst & 0xff0000) >> 16, (fen.dst & 0xff00) >> 8, fen.dst & 0xff, fen.dst_len, fen.type, fen.tos, fen.tb_id);
-
-	pr_err("%s %d nh_saddr = %u.%u.%u.%u\n", __func__, __LINE__, nh->nh_saddr & 0xff,
-		(nh->nh_saddr & 0xff00) >> 8, (nh->nh_saddr & 0xff0000) >> 16, (nh->nh_saddr & 0xff000000) >> 24);
-
-	if (fen.dst_len != 32) {
-		goto free;
-	}
+	unsigned int nhs = fib_info_num_path(fen.fi);
 
 	/* Protect internal structures from changes */
 	rtnl_lock();
 	switch (fib_work->event) {
 	case FIB_EVENT_ENTRY_REPLACE:
-		rswitch_set_l3fwd(fib_work);
-		rswitch_search_l3fwd(fib_work);
+		nh = fib_info_nh(fen.fi, 0);
+
+		pr_err("%s %d dst = %u.%u.%u.%u dst_len = %d type = 0x%x tos = 0x%x id = 0x%x nhs = %d\n", __func__, __LINE__, (fen.dst & 0xff000000) >> 24,
+			(fen.dst & 0xff0000) >> 16, (fen.dst & 0xff00) >> 8, fen.dst & 0xff, fen.dst_len, fen.type, fen.tos, fen.tb_id, nhs);
+		pr_err("%s %d nh_saddr = %u.%u.%u.%u\n", __func__, __LINE__, nh->nh_saddr & 0xff,
+			(nh->nh_saddr & 0xff00) >> 8, (nh->nh_saddr & 0xff0000) >> 16, (nh->nh_saddr & 0xff000000) >> 24);
+		//rswitch_set_l3fwd(fib_work);
+		//rswitch_search_l3fwd(fib_work);
 		fib_info_put(fib_work->fen_info.fi);
 		break;
 	case FIB_EVENT_ENTRY_DEL:
@@ -2843,6 +2842,8 @@ static int rswitch_fib_event(struct notifier_block *nb,
 	struct rswitch_private *pdev = container_of(nb, struct rswitch_private, fib_nb);
 	struct fib_notifier_info *info = ptr;
 	struct rswitch_fib_event_work *fib_work;
+
+	dump_stack();
 
 	pr_err("%s %d event = 0x%lx, family = 0x%x\n", __func__, __LINE__, event, info->family);
 
@@ -2970,7 +2971,6 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	struct rswitch_private *priv;
 	struct resource *res, *res_serdes;
 	int ret;
-	int i;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	res_serdes = platform_get_resource(pdev, IORESOURCE_MEM, 1);
@@ -3076,11 +3076,9 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&priv->ctr_dwq, counter_print);
 
 	queue_delayed_work(priv->ctr_monitoring_wq, &priv->ctr_dwq, msecs_to_jiffies(MSEC_DWQ_DELAY));
+	priv->fib_nb.notifier_call = rswitch_fib_event;
 
-	//priv->fib_nb.notifier_call = rswitch_fib_event;
-	//ret = register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
-
-	return ret;
+	return register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
 }
 
 static int renesas_eth_sw_remove(struct platform_device *pdev)

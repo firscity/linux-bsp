@@ -87,17 +87,9 @@ int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
 		.priv = rdev1->priv,
 		.src_ip = src_ip,
 		.dst_ip = dst_ip,
-		.dv = BIT(rdev1->port) | BIT(rdev2->port),
-		.slv = BIT(rdev1->port) | BIT(rdev2->port),
+		.dv = BIT(rdev2->port),
+		.slv = BIT(rdev1->port),
 		.csd = rdev2->rx_chain->index,
-		.l23_info = {
-			.priv = rdev1->priv,
-			.dst_mac = rdev2->ndev->dev_addr,
-			.routing_port_valid = BIT(rdev1->port) | BIT(rdev2->port),
-			.update_dst_mac = 1,
-			.update_src_mac = 0,
-			.update_ttl = 0,
-		},
 	};
 
 	rswitch_set_l3fwd_ports(&param);
