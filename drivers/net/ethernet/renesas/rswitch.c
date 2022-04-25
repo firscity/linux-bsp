@@ -2737,19 +2737,10 @@ int rswitch_set_l3fwd_ports(struct l3_ipv4_fwd_param *param)
 
 int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 {
-	struct rswitch_private *priv = fib_work->pdev;
+	struct rswitch_private *priv = fib_work->priv;
 	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
 	u32 src_addr = be32_to_cpu(nh->nh_saddr);
 	static u32 routing_number = 0;
-
-	//struct l3_ipv4_fwd_param param = {
-	//	.priv = priv,
-	//	.src_ip = src_ip,
-	//	.dst_ip = dst_ip,
-	//	.dv = BIT(rdev1->port) | BIT(rdev2->port),
-	//	.slv = BIT(rdev1->port) | BIT(rdev2->port),
-	//	.csd = rdev2->rx_chain->index,
-	//};
 
 	rs_write32(LTHSLP0v4 | LTHSLL, priv->addr + FWLTHTL0);
 	rs_write32(0, priv->addr + FWLTHTL1);
@@ -2781,7 +2772,7 @@ int rswitch_set_l3fwd(struct rswitch_fib_event_work *fib_work)
 
 static void rswitch_search_l3fwd(struct rswitch_fib_event_work *fib_work)
 {
-	struct rswitch_private *priv = fib_work->pdev;
+	struct rswitch_private *priv = fib_work->priv;
 	struct fib_nh *nh = fib_info_nh(fib_work->fen_info.fi, 0);
 	u32 src_addr = be32_to_cpu(nh->nh_saddr);
 
@@ -2799,6 +2790,39 @@ static void rswitch_search_l3fwd(struct rswitch_fib_event_work *fib_work)
 	pr_err("%s %d FWLTHTSR40 = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTSR40));
 }
 
+static struct rswitch_device *get_dev_by_ip(struct rswitch_private *priv, u32 ip_search)
+{
+	struct in_device *ip;
+	struct in_ifaddr *in;
+	u32 ip_addr, mask;
+	int i;
+
+	pr_err("%s %d ip = 0x%x", __func__, __LINE__, ip_search);
+
+	for (i = 0; i < RSWITCH_NUM_HW; i++) {
+		ip = priv->rdev[i]->ndev->ip_ptr;
+		if (ip == NULL) {
+			pr_err("%s %d ip is NULL skipping..", __func__, __LINE__); 
+			continue;
+		}
+		in = ip->ifa_list;
+		while (in != NULL) {
+			memcpy(&ip_addr, &in->ifa_address, 4);
+			memcpy(&mask, &in->ifa_mask, 4);
+			ip_addr = be32_to_cpu(ip_addr);
+			mask = be32_to_cpu(mask);
+			pr_err("%s %d riv->rdev[%d] address = 0x%x netmask = 0x%x\n", __func__, __LINE__, i, ip_addr, mask);
+			in = in->ifa_next;
+			if (ip_search == ip_addr) {
+				pr_err("FOUND port index = %d", priv->rdev[i]->rx_chain->index);
+				return priv->rdev[i];
+			}
+		}
+	}
+
+	return NULL;
+}
+
 static void rswitch_router_fib_event_work(struct work_struct *work)
 {
 	struct rswitch_fib_event_work *fib_work =
@@ -2806,6 +2830,9 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 	struct fib_entry_notifier_info fen = fib_work->fen_info;
 	struct fib_nh *nh = NULL;
 	unsigned int nhs = fib_info_num_path(fen.fi);
+	struct l3_ipv4_fwd_param param;
+	int src_csd, dst_csd, src_port, dst_port;
+	struct rswitch_device *rdev1, *rdev2;
 
 	/* Protect internal structures from changes */
 	rtnl_lock();
@@ -2817,12 +2844,40 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 			(fen.dst & 0xff0000) >> 16, (fen.dst & 0xff00) >> 8, fen.dst & 0xff, fen.dst_len, fen.type, fen.tos, fen.tb_id, nhs);
 		pr_err("%s %d nh_saddr = %u.%u.%u.%u\n", __func__, __LINE__, nh->nh_saddr & 0xff,
 			(nh->nh_saddr & 0xff00) >> 8, (nh->nh_saddr & 0xff0000) >> 16, (nh->nh_saddr & 0xff000000) >> 24);
-		//rswitch_set_l3fwd(fib_work);
-		//rswitch_search_l3fwd(fib_work);
-		fib_info_put(fib_work->fen_info.fi);
+
+		rdev1 = get_dev_by_ip(fib_work->priv, be32_to_cpu(nh->nh_saddr));
+		rdev2 = get_dev_by_ip(fib_work->priv, fen.dst);
+		if (!rdev1 || !rdev2) {
+			pr_err("%s %d = rdev1 rdev1 is NULL", __func__, __LINE__);
+			goto fib_put;
+		}
+
+		src_csd = rdev1->rx_chain->index;
+		src_csd = rdev2->rx_chain->index;
+		src_port = rdev1->port;
+		dst_port = rdev1->port;
+
+		param = (struct l3_ipv4_fwd_param) {
+			.priv = fib_work->priv,
+			.src_ip = be32_to_cpu(nh->nh_saddr),
+			.dst_ip = fen.dst,
+			.dv = BIT(dst_port),
+			.slv = BIT(src_port),
+			.csd = src_csd,
+		};
+		rswitch_set_l3fwd_ports(&param);
+
+		param = (struct l3_ipv4_fwd_param) {
+			.priv = fib_work->priv,
+			.src_ip = fen.dst,
+			.dst_ip = be32_to_cpu(nh->nh_saddr),
+			.dv = BIT(src_port),
+			.slv = BIT(dst_port),
+			.csd = dst_csd,
+		};
+		rswitch_set_l3fwd_ports(&param);
 		break;
 	case FIB_EVENT_ENTRY_DEL:
-		fib_info_put(fib_work->fen_info.fi);
 		break;
 	case FIB_EVENT_RULE_ADD:
 		break;
@@ -2830,8 +2885,9 @@ static void rswitch_router_fib_event_work(struct work_struct *work)
 		break;
 	}
 
+fib_put:
+	fib_info_put(fib_work->fen_info.fi);
 	rtnl_unlock();
-free:
 	kfree(fib_work);
 }
 
@@ -2839,11 +2895,9 @@ free:
 static int rswitch_fib_event(struct notifier_block *nb,
 				   unsigned long event, void *ptr)
 {
-	struct rswitch_private *pdev = container_of(nb, struct rswitch_private, fib_nb);
+	struct rswitch_private *priv = container_of(nb, struct rswitch_private, fib_nb);
 	struct fib_notifier_info *info = ptr;
 	struct rswitch_fib_event_work *fib_work;
-
-	dump_stack();
 
 	pr_err("%s %d event = 0x%lx, family = 0x%x\n", __func__, __LINE__, event, info->family);
 
@@ -2855,7 +2909,7 @@ static int rswitch_fib_event(struct notifier_block *nb,
 		return NOTIFY_BAD;
 
 	fib_work->event = event;
-	fib_work->pdev = pdev;
+	fib_work->priv = priv;
 
 	INIT_WORK(&fib_work->work, rswitch_router_fib_event_work);
 
@@ -2889,7 +2943,7 @@ static int rswitch_fib_event(struct notifier_block *nb,
 		break;
 	}
 
-	queue_work(pdev->rswitch_fib_wq, &fib_work->work);
+	queue_work(priv->rswitch_fib_wq, &fib_work->work);
 
 	return NOTIFY_DONE;
 }

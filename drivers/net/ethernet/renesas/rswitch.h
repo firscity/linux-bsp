@@ -20,6 +20,7 @@
 #include <linux/sched.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/inetdevice.h>
 
 static inline u32 rs_read32(void *addr)
 {
@@ -225,7 +226,7 @@ struct rswitch_fib_event_work {
 		struct fib_entry_notifier_info fen_info;
 		struct fib_rule_notifier_info fr_info;
 	};
-	struct rswitch_private *pdev;
+	struct rswitch_private *priv;
 	unsigned long event;
 };
 
