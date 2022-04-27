@@ -21,6 +21,8 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/inetdevice.h>
+#include <net/devlink.h>
+#include <net/net_namespace.h>
 
 static inline u32 rs_read32(void *addr)
 {
@@ -204,8 +206,6 @@ struct rswitch_private {
 	dma_addr_t desc_bat_dma;
 	u32 desc_bat_size;
 	phys_addr_t dev_id;
-	struct notifier_block fib_nb;
-	struct workqueue_struct *rswitch_fib_wq;
 
 	struct rswitch_device *rdev[RSWITCH_MAX_NUM_NDEV];
 
@@ -218,6 +218,9 @@ struct rswitch_private {
 
 	struct workqueue_struct *ctr_monitoring_wq;
 	struct delayed_work ctr_dwq;
+
+	struct notifier_block fib_nb;
+	struct workqueue_struct *rswitch_fib_wq;
 };
 
 struct rswitch_fib_event_work {
@@ -253,7 +256,9 @@ struct l3_ipv4_fwd_param {
 	u32 slv;
 };
 
+extern struct pernet_operations rswitch_net_ops;
 extern const struct net_device_ops rswitch_netdev_ops;
+extern const struct devlink_ops rswitch_dl_ops;
 
 int rswitch_txdmac_init(struct net_device *ndev, struct rswitch_private *priv);
 void rswitch_txdmac_free(struct net_device *ndev, struct rswitch_private *priv);
@@ -265,6 +270,6 @@ int rswitch_poll(struct napi_struct *napi, int budget);
 
 int rswitch_xen_ndev_register(struct rswitch_private *priv, int index);
 int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
-			     struct rswitch_device *rdev2, u32 ip_1, u32 ip_2, int update_mac);
+			     struct rswitch_device *rdev2);
 
-int rswitch_set_l3fwd_ports(struct l3_ipv4_fwd_param *param);
+int rswitch_set_l3fwd(struct l3_ipv4_fwd_param *param);

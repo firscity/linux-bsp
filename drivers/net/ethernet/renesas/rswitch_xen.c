@@ -79,21 +79,10 @@ out_reg_netdev:
 }
 
 int rswitch_xen_connect_devs(struct rswitch_device *rdev1,
-			     struct rswitch_device *rdev2, u32 src_ip, u32 dst_ip, int update_mac)
+			     struct rswitch_device *rdev2)
 {
-	//rdev1->remote_chain = rdev2->rx_chain->index;
-	//rdev2->remote_chain = rdev1->rx_chain->index;
-	struct l3_ipv4_fwd_param param = {
-		.priv = rdev1->priv,
-		.src_ip = src_ip,
-		.dst_ip = dst_ip,
-		.dv = BIT(rdev2->port),
-		.slv = BIT(rdev1->port),
-		.csd = rdev2->rx_chain->index,
-	};
-
-	rswitch_set_l3fwd_ports(&param);
-	//rswitch_set_l3fwd_ports(rdev2->priv, ip_2, ip_1, rdev1->rx_chain->index);
+	rdev1->remote_chain = rdev2->rx_chain->index;
+	rdev2->remote_chain = rdev1->rx_chain->index;
 
 	return 0;
 }
