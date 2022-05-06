@@ -216,9 +216,6 @@ struct rswitch_private {
 	struct clk *rsw_clk;
 	struct clk *phy_clk;
 
-	struct workqueue_struct *ctr_monitoring_wq;
-	struct delayed_work ctr_dwq;
-
 	struct notifier_block fib_nb;
 	struct workqueue_struct *rswitch_fib_wq;
 };
@@ -247,13 +244,17 @@ struct l3_ipv4_fwd_param {
 	struct rswitch_private *priv;
 	struct l23_update_info l23_info;
 	u32 src_ip;
-	u32 dst_ip;
+	union {
+		u32 dst_ip;
+		u32 pf_cascade_index;
+	};
 	// CPU sub destination
 	u32 csd;
 	// Destination vector
 	u32 dv;
 	// Source lock vector
 	u32 slv;
+	u8 frame_type;
 };
 
 extern struct pernet_operations rswitch_net_ops;

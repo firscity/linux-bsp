@@ -2042,7 +2042,14 @@ int rswitch_set_l3fwd(struct l3_ipv4_fwd_param *param)
 	//if (param->l23_info.update_dst_mac || param->l23_info.update_src_mac || param->l23_info.update_ttl)
 	//	rswitch_setup_l23_update(&param->l23_info);
 
-	rs_write32(LTHSLP0v4, priv->addr + FWLTHTL0);
+	// HACK!!
+	if (param->frame_type) {
+		pr_err("%s %d set frame type", __func__, __LINE__);
+		rs_write32(LTHSLP0v4, priv->addr + FWLTHTL0);
+	} else {
+		pr_err("%s %d don't set frame type", __func__, __LINE__);
+		rs_write32(0, priv->addr + FWLTHTL0);
+	}
 	rs_write32(0, priv->addr + FWLTHTL1);
 	rs_write32(0, priv->addr + FWLTHTL2);
 	rs_write32(param->src_ip, priv->addr + FWLTHTL3);
@@ -2988,34 +2995,7 @@ static void rswitch_init_hash_param(struct rswitch_private *priv)
 	rs_write32(BIT(22) | BIT(23), priv->addr + FWIP4SC);
 }
 
-#define MSEC_DWQ_DELAY (10000)
-
-void counter_print(struct work_struct *work)  
-{
-    struct rswitch_private *priv = container_of(to_delayed_work(work),
-				struct rswitch_private, ctr_dwq);
-	int i;
-
-	for (i = 0; i < 5; i++) {
-		pr_err("%s %d rs_read32(priv->addr + FWEIS0%d) = 0x%x\n", __func__, __LINE__, i, rs_read32(priv->addr + FWEIS00 + i * 0x10));
-		pr_err("%s %d rs_read32(priv->addr + FWLTHFDCN0%d) = 0x%x\n", __func__, __LINE__, i, rs_read32(priv->addr + FWLTHFDCN0 + i * 0x10));
-		pr_err("%s %d rs_read32(priv->addr + FWLTHRDCN0%d) = 0x%x\n", __func__, __LINE__, i, rs_read32(priv->addr + FWLTHRDCN0 + i * 0x10));
-	}
-
-	pr_err("%s %d rs_read32(priv->addr + FWEIS1) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIS1));
-	pr_err("%s %d rs_read32(priv->addr + FWEIS2) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIS2));
-	pr_err("%s %d rs_read32(priv->addr + FWEIE1) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIE1));
-	pr_err("%s %d rs_read32(priv->addr + FWEIE2) = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWEIE2));
-
-	queue_delayed_work(priv->ctr_monitoring_wq, &priv->ctr_dwq, msecs_to_jiffies(MSEC_DWQ_DELAY));
-}
-
-static void renesas_disable_hash_equation(struct rswitch_private *priv)
-{
-	rs_write32(0, priv->addr + FWSFHEC);
-}
-
-static int rswitch_set_fwd(struct rswitch_device *rdev1, struct rswitch_device *rdev2, u32 src_ip, u32 dst_ip)
+static int rswitch_set_fwd(struct rswitch_device *rdev1, struct rswitch_device *rdev2, u32 src_ip, u32 dst_ip, u8 set_frame_type)
 {
 	struct l3_ipv4_fwd_param param = {
 		.priv = rdev1->priv,
@@ -3024,11 +3004,121 @@ static int rswitch_set_fwd(struct rswitch_device *rdev1, struct rswitch_device *
 		.dv = BIT(rdev2->port),
 		.slv = BIT(rdev1->port),
 		.csd = rdev2->rx_chain->index,
+		.frame_type = set_frame_type,
 	};
 
-	rswitch_set_l3fwd(&param);
+	return rswitch_set_l3fwd(&param);
+}
 
-	return 0;
+#define RDEV_HOST_IP (0xC0A80164)
+#define RDEV0_IP (0xC0A80101)
+#define RDEV3_IP (0xC0A80202)
+#define RDEV4_IP (0xC0A80201)
+
+#define SUBNET0 (0xC0A80100)
+#define SUBNET1 (0xC0A80200)
+
+// The number of two bytes filters
+#define PFL_TWBF_N (48)
+// The number of three bytes filters
+#define PFL_THBF_N (16)
+// // The number of four bytes filters
+#define PFL_FOBF_N (48)
+
+#define MAC_DST_OFFSET (0)
+#define MAC_SRC_OFFSET (6)
+#define IP_VERSION_OFFSET (12)
+#define IPV4_SRC_OFFSET (26)
+#define IPV4_DST_OFFSET (30)
+
+#define FWFOBFV0Ci(i) (FWFOBFV0C0 + ((i) * 0x10))
+#define FWFOBFV1Ci(i) (FWFOBFV1C0 + ((i) * 0x10))
+#define FWFOBFCi(i) (FWFOBFC0 + ((i) * 0x10))
+#define FWCFMCij(i, j) (FWCFMC00 + ((i) * 0x40 + (j) * 0x4))
+#define FWCFCi(i) (FWCFC0 + ((i) * 0x40))
+#define SNOOPING_BUS_OFFSET(offset) ((offset) << 16)
+#define FBFILTER_NUM(i) (2 * (PFL_TWBF_N + PFL_THBF_N + i))
+
+#define MASK_MODE (0)
+#define EXPAND_MODE (BIT(0))
+#define PRECISE_MODE (BIT(1))
+
+#define DISABLE_CASCADE_FILTER (0)
+#define ENABLE_FILTER (BIT(15))
+
+static void rswitch_perfect_filter_enable_unsecure_access(struct rswitch_private *priv)
+{
+	// Enable access from unsecure APB for the first 32 four-byte filters
+	rs_write32(0xffffffff, priv->addr + FWSCR12);
+	// Enable access from unsecure APB for the first 32 cascade filters
+	rs_write32(0xffffffff, priv->addr + FWSCR20);
+}
+
+static void rswitch_add_subnet_route(struct rswitch_device *rdev, u32 ip, u32 subnet_ip, u32 mask)
+{
+	static int pf_4byte_index = 0;
+	static int pf_cascade_index = 0;
+	// When a bit is set to 1, the corresponding bit is not used for comparison
+	u32 reverse_mask = ~mask;
+	struct l3_ipv4_fwd_param param = {
+		.priv = rdev->priv,
+		.src_ip = 0,
+		.pf_cascade_index = pf_cascade_index,
+		.dv = BIT(rdev->port),
+		.slv = 0x3F,
+		.csd = rdev->rx_chain->index,
+		.frame_type = 0,
+	};
+	struct rswitch_private *priv = rdev->priv;
+
+	pr_err("%s %d add entry pf_4byte_index = 0x%x pf_cascade_index = 0x%x ip = 0x%x mask = 0x%x\n",
+		__func__, __LINE__, pf_4byte_index, pf_cascade_index, ip, mask);
+
+	rs_write32(DISABLE_CASCADE_FILTER, priv->addr + FWCFCi(pf_cascade_index));
+
+	rs_write32(ip, priv->addr + FWFOBFV0Ci(pf_4byte_index));
+	rs_write32(0, priv->addr + FWFOBFV1Ci(pf_4byte_index));
+	rs_write32(PRECISE_MODE | SNOOPING_BUS_OFFSET(IPV4_DST_OFFSET), priv->addr + FWFOBFCi(pf_4byte_index));
+	rs_write32(FBFILTER_NUM(pf_4byte_index) | ENABLE_FILTER, priv->addr + FWCFMCij(pf_cascade_index, 0));
+	++pf_4byte_index;
+
+	rs_write32(subnet_ip, priv->addr + FWFOBFV0Ci(pf_4byte_index));
+	rs_write32(reverse_mask, priv->addr + FWFOBFV1Ci(pf_4byte_index));
+	rs_write32(MASK_MODE | SNOOPING_BUS_OFFSET(IPV4_SRC_OFFSET), priv->addr + FWFOBFCi(pf_4byte_index));
+	rs_write32(FBFILTER_NUM(pf_4byte_index) | ENABLE_FILTER, priv->addr + FWCFMCij(pf_cascade_index, 1));
+	++pf_4byte_index;
+
+	// Enable cascade register port valid for GWCA0
+	rs_write32(0x000f003f, priv->addr + FWCFCi(pf_cascade_index));
+	//rs_write32(BIT(3), priv->addr + FWCFCi(pf_cascade_index));
+	++pf_cascade_index;
+
+	// Add entries with forwarding for vmq0/1 to subnet
+	rswitch_set_l3fwd(&param);
+}
+
+static void rswitch_test_perfect_filter(struct rswitch_private *priv)
+{
+	//rswitch_add_subnet_route(priv->rdev[0], RDEV0_IP, SUBNET0, 0xffffff00);
+	rswitch_add_subnet_route(priv->rdev[3], RDEV3_IP, SUBNET1, 0xffffff00);
+	rswitch_add_subnet_route(priv->rdev[4], RDEV4_IP, SUBNET1, 0xffffff00);
+
+	rswitch_add_subnet_route(priv->rdev[3], RDEV3_IP, SUBNET0, 0xffffff00);
+	rswitch_add_subnet_route(priv->rdev[4], RDEV0_IP, SUBNET1, 0xffffff00);
+
+	//rswitch_add_subnet_route(priv->rdev[0], RDEV0_IP, SUBNET1, 0xffffff00);
+
+	//rswitch_set_fwd(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV0_IP, 1);
+	//rswitch_set_fwd(priv->rdev[4], priv->rdev[3], RDEV0_IP, RDEV3_IP, 1);
+
+	//rswitch_add_subnet_route(priv->rdev[0], RDEV0_IP, SUBNET1, 0xffffff00);
+	//rswitch_add_subnet_route(priv->rdev[3], RDEV3_IP, SUBNET0, 0xffffff00);
+	//rswitch_add_subnet_route(priv->rdev[4], RDEV4_IP, SUBNET0, 0xffffff00);
+}
+
+static void renesas_disable_hash_equation(struct rswitch_private *priv)
+{
+	rs_write32(0, priv->addr + FWSFHEC);
 }
 
 static int renesas_eth_sw_probe(struct platform_device *pdev)
@@ -3103,46 +3193,41 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	rswitch_init(priv);
 
 	rs_write32(0x200 << 16, priv->addr + FWLTHHEC);
+	// Enable access for both APB for counters
+	rs_write32(BIT(9) | BIT(10), priv->addr + FWSCR0);
 
 	rswitch_xen_ndev_register(priv, 0);
 	rswitch_xen_ndev_register(priv, 1);
 	renesas_disable_hash_equation(priv);
 
 	rswitch_l23_enable_unsecure_access(priv);
+	rswitch_perfect_filter_enable_unsecure_access(priv);
 	rswitch_init_hash_param(priv);
 	rswitch_reset_l3_table(priv);
 	rswitch_reset_l23_table(priv);
 
 	device_set_wakeup_capable(&pdev->dev, 1);
 
-#define RDEV_HOST_IP (0xC0A80164)
-#define RDEV0_IP (0xC0A80101)
-#define RDEV3_IP (0xC0A80202)
-#define RDEV4_IP (0xC0A80201)
-
 	rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[4]);
 
+	rswitch_test_perfect_filter(priv);
+
 	// Works vmq0 <--> vmq1 <--> tsn0
-	rswitch_set_fwd(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV4_IP);
-	rswitch_set_fwd(priv->rdev[4], priv->rdev[3], RDEV4_IP, RDEV3_IP);
+	//rswitch_set_fwd(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV4_IP);
+	//rswitch_set_fwd(priv->rdev[4], priv->rdev[3], RDEV4_IP, RDEV3_IP);
 
-	rswitch_set_fwd(priv->rdev[0], priv->rdev[4], RDEV0_IP, RDEV4_IP);
-	rswitch_set_fwd(priv->rdev[4], priv->rdev[0], RDEV4_IP, RDEV0_IP);
+	//rswitch_set_fwd(priv->rdev[0], priv->rdev[4], RDEV0_IP, RDEV4_IP, 1);
+	//rswitch_set_fwd(priv->rdev[4], priv->rdev[0], RDEV4_IP, RDEV0_IP, 1);
 
-	rswitch_set_fwd(priv->rdev[0], priv->rdev[4], RDEV0_IP, RDEV3_IP);
-	rswitch_set_fwd(priv->rdev[4], priv->rdev[0], RDEV3_IP, RDEV0_IP);
+	//rswitch_set_fwd(priv->rdev[0], priv->rdev[4], RDEV0_IP, RDEV3_IP, 1);
+	//rswitch_set_fwd(priv->rdev[4], priv->rdev[0], RDEV3_IP, RDEV0_IP, 1);
 
-	rswitch_set_fwd(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV0_IP);
-	rswitch_set_fwd(priv->rdev[4], priv->rdev[3], RDEV0_IP, RDEV3_IP);
+	//rswitch_set_fwd(priv->rdev[3], priv->rdev[4], RDEV3_IP, RDEV0_IP, 1);
+	//rswitch_set_fwd(priv->rdev[4], priv->rdev[3], RDEV0_IP, RDEV3_IP, 1);
 
 	// Works for vmq0 <--> tsn0
 	//rswitch_xen_connect_devs(priv->rdev[0], priv->rdev[3], RDEV0_IP, RDEV3_IP, 1);
 	//rswitch_xen_connect_devs(priv->rdev[3], priv->rdev[0], RDEV3_IP, RDEV0_IP, 1);
-
-	priv->ctr_monitoring_wq = create_workqueue("counter_check");
-	INIT_DELAYED_WORK(&priv->ctr_dwq, counter_print);
-
-	queue_delayed_work(priv->ctr_monitoring_wq, &priv->ctr_dwq, msecs_to_jiffies(MSEC_DWQ_DELAY));
 
 	register_pernet_subsys(&rswitch_net_ops);
  
