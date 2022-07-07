@@ -29,6 +29,8 @@
 #include <net/arp.h>
 #include <net/flow_offload.h>
 #include <net/fib_notifier.h>
+#include <net/pkt_cls.h>
+#include <net/tc_act/tc_gact.h>
 
 #include "rtsn_ptp.h"
 
@@ -1082,6 +1084,23 @@ struct rswitch_ipv4_route {
 	struct list_head list;
 };
 
+enum rswitch_tc_u32_action {
+	FILTER_PASS = 0,
+	FILTER_DROP,
+	FILTER_SWITCH
+};
+
+struct rswitch_tc_u32_filter {
+	u32 ip;
+	u32 subnet;
+	u32 mask;
+	u32 offset;
+	enum rswitch_tc_u32_action action;
+	struct rswitch_device *dev;
+	struct list_head list;
+	struct l3_ipv4_fwd_param param;
+};
+
 struct rswitch_device {
 	struct rswitch_private *priv;
 	struct net_device *ndev;
@@ -1097,6 +1116,7 @@ struct rswitch_device {
 	int port;
 	struct rswitch_etha *etha;
 	struct list_head routing_list;
+	struct list_head tc_u32_list;
 };
 
 struct rswitch_mfwd_mac_table_entry {
@@ -2299,11 +2319,106 @@ static int rswitch_hwstamp_get(struct net_device *ndev, struct ifreq *req)
 
 LIST_HEAD(rswitch_block_cb_list);
 
+static int rswitch_new_knode(struct net_device *ndev, struct tc_cls_u32_offload *cls)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+	const struct tc_action *a;
+	struct tcf_exts *exts;
+	int i;
+
+	pr_err("%s %d cls->command = %d", __func__, __LINE__, cls->command);
+	pr_err("%s %d cls->knode.sel->offshift = %d", __func__, __LINE__, cls->knode.sel->offshift);
+	pr_err("%s %d cls->knode.sel->offmask = %d", __func__, __LINE__, cls->knode.sel->offmask);
+	pr_err("%s %d cls->knode.sel->offoff = %d", __func__, __LINE__, cls->knode.sel->offoff);
+	pr_err("%s %d cls->knode.sel->off = %d", __func__, __LINE__, cls->knode.sel->off);
+
+	pr_err("%s %d cls->knode.sel->keys[0].mask = 0x%x", __func__, __LINE__, cls->knode.sel->keys[0].mask);
+	pr_err("%s %d cls->knode.sel->keys[0].val = 0x%x", __func__, __LINE__, cls->knode.sel->keys[0].val);
+	pr_err("%s %d cls->knode.sel->keys[0].off = %d", __func__, __LINE__, cls->knode.sel->keys[0].off);
+	pr_err("%s %d cls->knode.sel->keys[0].offmask = %d", __func__, __LINE__, cls->knode.sel->keys[0].offmask);
+
+	exts = cls->knode.exts;
+	if (!tcf_exts_has_actions(exts))
+		return -EINVAL;
+
+	tcf_exts_for_each_action(i, a, exts) {
+		/* Drop in hardware. */
+		if (is_tcf_gact_shot(a)) {
+			pr_err("%s %d action drop", __func__, __LINE__);
+			break;
+		}
+	}
+
+	return -EOPNOTSUPP;
+}
+
+static int rswitch_delete_knode(struct net_device *dev, struct tc_cls_u32_offload *cls)
+{
+	pr_err("%s %d cls->command = %d", __func__, __LINE__, cls->command);
+
+	return -EOPNOTSUPP;
+}
+
+static int rswitch_setup_tc_flower(struct net_device *dev,
+				struct flow_cls_offload *cls_flower)
+{
+	pr_err("%s %d cls_flower->command = %d", __func__, __LINE__, cls_flower->command);
+
+	return -EOPNOTSUPP;
+}
+
+static int rswitch_setup_tc_cls_u32(struct net_device *dev,
+				 struct tc_cls_u32_offload *cls_u32)
+{
+	pr_err("%s %d cls_u32->command = %d", __func__, __LINE__, cls_u32->command);
+
+	switch (cls_u32->command) {
+	case TC_CLSU32_NEW_KNODE:
+	case TC_CLSU32_REPLACE_KNODE:
+		return rswitch_new_knode(dev, cls_u32);
+	case TC_CLSU32_DELETE_KNODE:
+		return rswitch_delete_knode(dev, cls_u32);
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	return -EOPNOTSUPP;
+}
+
+static int rswitch_setup_tc_matchall(struct net_device *dev,
+				  struct tc_cls_matchall_offload *cls_matchall)
+{
+	pr_err("%s %d cls_matchall->command = %d", __func__, __LINE__, cls_matchall->command);
+
+	return -EOPNOTSUPP;
+}
+
+static int rswitch_setup_tc_block_cb(enum tc_setup_type type,
+					 void *type_data,
+					 void *cb_priv)
+{
+	struct net_device *dev = cb_priv;
+	pr_err("%s %d type = %d", __func__, __LINE__, type);
+
+	switch (type) {
+	case TC_SETUP_CLSU32:
+		return rswitch_setup_tc_cls_u32(dev, type_data);
+	case TC_SETUP_CLSFLOWER:
+		return rswitch_setup_tc_flower(dev, type_data);
+	case TC_SETUP_CLSMATCHALL:
+		return rswitch_setup_tc_matchall(dev, type_data);
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
 static int rswitch_setup_tc_block_bind(struct rswitch_device *rdev,
 		struct flow_block_offload *f, bool ingress)
 {
-
-	return 0;
+	return flow_block_cb_setup_simple(f, &rswitch_block_cb_list,
+		rswitch_setup_tc_block_cb, rdev, rdev->ndev, ingress);
 }
 
 static int rswitch_setup_tc_block_unbind(struct rswitch_device *rdev,
@@ -2331,7 +2446,7 @@ static int rswitch_setup_tc_block_clsact(struct rswitch_device *rdev,
 static int rswitch_setup_tc_block(struct rswitch_device *rdev,
 		struct flow_block_offload *f)
 {
-	printk("f->command = %d, f->binder_type =%d\n", f->command, f->binder_type);
+	printk("f->command = %d, f->binder_type = %d\n", f->command, f->binder_type);
 	switch (f->binder_type) {
 	case FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS:
 		return rswitch_setup_tc_block_clsact(rdev, f, true);
