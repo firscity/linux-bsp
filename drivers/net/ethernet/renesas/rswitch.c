@@ -1094,6 +1094,7 @@ enum rswitch_tc_u32_action {
 };
 
 struct rswitch_tc_u32_filter {
+	u32 handle;
 	u32 value;
 	u32 mask;
 	u32 offset;
@@ -2325,8 +2326,9 @@ LIST_HEAD(rswitch_block_cb_list);
 
 static int rswitch_add_l3fwd(struct l3_ipv4_fwd_param *param);
 
-static int rswitch_add_drop_action_knode(struct rswitch_device *rdev, struct tc_cls_u32_offload *cls)
+static int rswitch_add_drop_action_knode(struct rswitch_tc_u32_filter *filter, struct tc_cls_u32_offload *cls)
 {
+	struct rswitch_device *rdev = filter->rdev;
 	struct rswitch_private *priv = rdev->priv;
 	u32 reverse_mask = ~be32_to_cpu(cls->knode.sel->keys[0].mask);
 	int cascade_idx, four_byte_idx;
@@ -2334,6 +2336,7 @@ static int rswitch_add_drop_action_knode(struct rswitch_device *rdev, struct tc_
 	if (!tc_u32_cfg)
 		return -ENOMEM;
 
+	tc_u32_cfg->handle = cls->knode.handle;
 	tc_u32_cfg->action = ACTION_DROP;
 	tc_u32_cfg->rdev = rdev;
 	tc_u32_cfg->value = be32_to_cpu(cls->knode.sel->keys[0].val);
@@ -2355,10 +2358,7 @@ static int rswitch_add_drop_action_knode(struct rswitch_device *rdev, struct tc_
 	rs_write32(reverse_mask, priv->addr + FWFOBFV1Ci(four_byte_idx));
 	rs_write32(MASK_MODE | SNOOPING_BUS_OFFSET(cls->knode.sel->keys[0].off + IPV4_HEADER_OFFSET), priv->addr + FWFOBFCi(four_byte_idx));
 	rs_write32(FBFILTER_NUM(four_byte_idx) | ENABLE_FILTER, priv->addr + FWCFMCij(cascade_idx, 0));
-	rs_write32(0x000f003f, priv->addr + FWCFCi(cascade_idx));
-
-	pr_err("%s %d action drop", __func__, __LINE__);
-	pr_err("%s %d ip = 0x%x, reverse_mask = 0x%x", __func__, __LINE__, tc_u32_cfg->value, reverse_mask);
+	rs_write32(0x000f0000 | BIT(rdev->port), priv->addr + FWCFCi(cascade_idx));
 
 	if (rswitch_add_l3fwd(&tc_u32_cfg->param)) {
 		kfree(tc_u32_cfg);
@@ -2394,6 +2394,7 @@ static int rswitch_add_redirect_action_knode(struct rswitch_tc_u32_filter *filte
 	if (!tc_u32_cfg)
 		return -ENOMEM;
 
+	tc_u32_cfg->handle = cls->knode.handle;
 	tc_u32_cfg->action = filter->action;
 	tc_u32_cfg->rdev = rdev;
 	tc_u32_cfg->value = be32_to_cpu(cls->knode.sel->keys[0].val);
@@ -2470,33 +2471,46 @@ static void rswitch_tc_skbmod_get_dmac(const struct tc_action *a, u8 *dmac)
 	ether_addr_copy(dmac, p->eth_dst);
 }
 
-static int rswitch_new_knode(struct net_device *ndev, struct tc_cls_u32_offload *cls)
+static int rswitch_remove_l3fwd(struct l3_ipv4_fwd_param *param);
+
+static int rswitch_del_knode(struct net_device *ndev, struct tc_cls_u32_offload *cls)
+{
+	struct rswitch_device *rdev = netdev_priv(ndev);
+	struct list_head *cur, *tmp;
+	bool removed = false;
+
+	list_for_each_safe(cur, tmp, &rdev->tc_u32_list) {
+		struct rswitch_tc_u32_filter *tc_u32_cfg = list_entry(cur, struct rswitch_tc_u32_filter, list);
+
+		if (cls->knode.handle == tc_u32_cfg->handle) {
+			removed = true;
+			rswitch_remove_l3fwd(&tc_u32_cfg->param);
+			list_del(&tc_u32_cfg->list);
+			kfree(tc_u32_cfg);
+		}
+	}
+
+	if (removed)
+		return 0;
+
+	return -EOPNOTSUPP;
+}
+
+static int rswitch_add_knode(struct net_device *ndev, struct tc_cls_u32_offload *cls)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
 	const struct tc_action *a;
 	struct tcf_exts *exts;
 	struct rswitch_tc_u32_filter filter = {
-		.action = 0
+		.action = 0,
 	};
 	int i;
-
-	filter.rdev = rdev;
-
-	pr_err("%s %d cls->command = %d", __func__, __LINE__, cls->command);
-	pr_err("%s %d cls->knode.sel->offshift = %d", __func__, __LINE__, cls->knode.sel->offshift);
-	pr_err("%s %d cls->knode.sel->offmask = %d", __func__, __LINE__, cls->knode.sel->offmask);
-	pr_err("%s %d cls->knode.sel->offoff = %d", __func__, __LINE__, cls->knode.sel->offoff);
-	pr_err("%s %d cls->knode.sel->off = %d", __func__, __LINE__, cls->knode.sel->off);
-
-	/* TODO: Add support for several fields */
-	pr_err("%s %d cls->knode.sel->keys[0].mask = 0x%x", __func__, __LINE__, cls->knode.sel->keys[0].mask);
-	pr_err("%s %d cls->knode.sel->keys[0].val = 0x%x", __func__, __LINE__, cls->knode.sel->keys[0].val);
-	pr_err("%s %d cls->knode.sel->keys[0].off = %d", __func__, __LINE__, cls->knode.sel->keys[0].off);
-	pr_err("%s %d cls->knode.sel->keys[0].offmask = %d", __func__, __LINE__, cls->knode.sel->keys[0].offmask);
 
 	exts = cls->knode.exts;
 	if (!tcf_exts_has_actions(exts))
 		return -EINVAL;
+
+	filter.rdev = rdev;
 
 	tcf_exts_for_each_action(i, a, exts) {
 		/* Several actions with drop cannot be offloaded */
@@ -2505,10 +2519,8 @@ static int rswitch_new_knode(struct net_device *ndev, struct tc_cls_u32_offload 
 
 		if (is_tcf_act_skbmod(a)) {
 			/* skbmod dmac action can be offloaded only if placed before redirrect */
-			if (!rswitch_skbmod_can_offload(a) || filter.action != 0) {
-				pr_err("%s %d error not supported", __func__, __LINE__);
+			if (!rswitch_skbmod_can_offload(a) || filter.action != 0)
 				return -EOPNOTSUPP;
-			}
 			filter.action |= ACTION_SKBMOD;
 			rswitch_tc_skbmod_get_dmac(a, filter.dmac);
 			continue;
@@ -2528,20 +2540,13 @@ static int rswitch_new_knode(struct net_device *ndev, struct tc_cls_u32_offload 
 			filter.action |= ACTION_DROP;
 	}
 
-	if (filter.action & ACTION_DROP)
-		return rswitch_add_drop_action_knode(rdev, cls);
 	/* skbmod cannot be offloaded without redirect */
 	if ((filter.action & (ACTION_SKBMOD | ACTION_MIRRED_REDIRECT)) == ACTION_SKBMOD)
 		return -EOPNOTSUPP;
-	if (filter.action & (ACTION_SKBMOD | ACTION_MIRRED_REDIRECT))
+	if (filter.action & ACTION_DROP)
+		return rswitch_add_drop_action_knode(&filter, cls);
+	if (filter.action & ACTION_MIRRED_REDIRECT)
 		return rswitch_add_redirect_action_knode(&filter, cls);
-
-	return -EOPNOTSUPP;
-}
-
-static int rswitch_delete_knode(struct net_device *dev, struct tc_cls_u32_offload *cls)
-{
-	pr_err("%s %d cls->command = %d", __func__, __LINE__, cls->command);
 
 	return -EOPNOTSUPP;
 }
@@ -2549,22 +2554,18 @@ static int rswitch_delete_knode(struct net_device *dev, struct tc_cls_u32_offloa
 static int rswitch_setup_tc_flower(struct net_device *dev,
 				struct flow_cls_offload *cls_flower)
 {
-	pr_err("%s %d cls_flower->command = %d", __func__, __LINE__, cls_flower->command);
-
 	return -EOPNOTSUPP;
 }
 
 static int rswitch_setup_tc_cls_u32(struct net_device *dev,
 				 struct tc_cls_u32_offload *cls_u32)
 {
-	pr_err("%s %d cls_u32->command = %d", __func__, __LINE__, cls_u32->command);
-
 	switch (cls_u32->command) {
 	case TC_CLSU32_NEW_KNODE:
 	case TC_CLSU32_REPLACE_KNODE:
-		return rswitch_new_knode(dev, cls_u32);
+		return rswitch_add_knode(dev, cls_u32);
 	case TC_CLSU32_DELETE_KNODE:
-		return rswitch_delete_knode(dev, cls_u32);
+		return rswitch_del_knode(dev, cls_u32);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -2575,8 +2576,6 @@ static int rswitch_setup_tc_cls_u32(struct net_device *dev,
 static int rswitch_setup_tc_matchall(struct net_device *dev,
 				  struct tc_cls_matchall_offload *cls_matchall)
 {
-	pr_err("%s %d cls_matchall->command = %d", __func__, __LINE__, cls_matchall->command);
-
 	return -EOPNOTSUPP;
 }
 
@@ -2585,7 +2584,6 @@ static int rswitch_setup_tc_block_cb(enum tc_setup_type type,
 					 void *cb_priv)
 {
 	struct net_device *dev = cb_priv;
-	pr_err("%s %d type = %d", __func__, __LINE__, type);
 
 	switch (type) {
 	case TC_SETUP_CLSU32:
