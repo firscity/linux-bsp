@@ -2472,6 +2472,52 @@ static int rswitch_setup_pf(struct rswitch_pf_param *pf_param)
 	return cascade_idx;
 }
 
+static enum pf_type rswitch_get_pf_type_by_num(int num)
+{
+	if (num >= FBFILTER_NUM(0))
+		return PF_FOUR_BYTE;
+	if (num >= THBFILTER_NUM(0))
+		return PF_THREE_BYTE;
+	return PF_TWO_BYTE;
+}
+
+static void rswitch_put_pf(struct l3_ipv4_fwd_param *param)
+{
+	int i, idx, pf_num;
+	enum pf_type type;
+
+	rs_write32(DISABLE_FILTER, param->priv->addr + FWCFCi(param->pf_cascade_index));
+
+	for (i = 0; i < MAX_PF_ENTRIES; i++) {
+		pf_num = rs_read32(param->priv->addr + FWCFMCij(param->pf_cascade_index, i)) & 0xff;
+		if (!(rs_read32(param->priv->addr + FWCFMCij(param->pf_cascade_index, i)) & ENABLE_FILTER))
+			break;
+
+		type = rswitch_get_pf_type_by_num(pf_num);
+		if (type == PF_TWO_BYTE) {
+			idx = TBWFILTER_IDX(pf_num);
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWTWBFVCi(idx));
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWTWBFCi(idx));
+			clear_bit(idx, param->priv->filters.two_bytes);
+		} else if (type == PF_THREE_BYTE) {
+			idx = THBFILTER_IDX(pf_num);
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWTHBFV0Ci(idx));
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWTHBFV1Ci(idx));
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWTHBFCi(idx));
+			clear_bit(idx, param->priv->filters.three_bytes);
+		} else if (type == PF_FOUR_BYTE) {
+			idx = FBFILTER_IDX(pf_num);
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWFOBFV0Ci(idx));
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWFOBFV1Ci(idx));
+			rs_write32(DISABLE_FILTER, param->priv->addr + FWFOBFCi(idx));
+			clear_bit(idx, param->priv->filters.four_bytes);
+		}
+		rs_write32(DISABLE_FILTER, param->priv->addr + FWCFMCij(param->pf_cascade_index, i));
+	}
+
+	clear_bit(param->pf_cascade_index, param->priv->filters.cascade);
+}
+
 static int rswitch_add_drop_action_knode(struct rswitch_tc_u32_filter *filter, struct tc_cls_u32_offload *cls)
 {
 	struct rswitch_device *rdev = filter->rdev;
@@ -3089,52 +3135,6 @@ static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 static int rswitch_add_l3fwd(struct l3_ipv4_fwd_param *param)
 {
 	return rswitch_modify_l3fwd(param, false);
-}
-
-static enum pf_type rswitch_get_pf_type_by_num(int num)
-{
-	if (num >= FBFILTER_NUM(0))
-		return PF_FOUR_BYTE;
-	if (num >= THBFILTER_NUM(0))
-		return PF_THREE_BYTE;
-	return PF_TWO_BYTE;
-}
-
-static void rswitch_put_pf(struct l3_ipv4_fwd_param *param)
-{
-	int i, idx, pf_num;
-	enum pf_type type;
-
-	rs_write32(DISABLE_FILTER, param->priv->addr + FWCFCi(param->pf_cascade_index));
-
-	for (i = 0; i < MAX_PF_ENTRIES; i++) {
-		pf_num = rs_read32(param->priv->addr + FWCFMCij(param->pf_cascade_index, i)) & 0xff;
-		if (!(rs_read32(param->priv->addr + FWCFMCij(param->pf_cascade_index, i)) & ENABLE_FILTER))
-			break;
-
-		type = rswitch_get_pf_type_by_num(pf_num);
-		if (type == PF_TWO_BYTE) {
-			idx = TBWFILTER_IDX(pf_num);
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWTWBFVCi(idx));
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWTWBFCi(idx));
-			clear_bit(idx, param->priv->filters.two_bytes);
-		} else if (type == PF_THREE_BYTE) {
-			idx = THBFILTER_IDX(pf_num);
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWTHBFV0Ci(idx));
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWTHBFV1Ci(idx));
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWTHBFCi(idx));
-			clear_bit(idx, param->priv->filters.three_bytes);
-		} else if (type == PF_FOUR_BYTE) {
-			idx = FBFILTER_IDX(pf_num);
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWFOBFV0Ci(idx));
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWFOBFV1Ci(idx));
-			rs_write32(DISABLE_FILTER, param->priv->addr + FWFOBFCi(idx));
-			clear_bit(idx, param->priv->filters.four_bytes);
-		}
-		rs_write32(DISABLE_FILTER, param->priv->addr + FWCFMCij(param->pf_cascade_index, i));
-	} 
-
-	clear_bit(param->pf_cascade_index, param->priv->filters.cascade);
 }
 
 static int rswitch_remove_l3fwd(struct l3_ipv4_fwd_param *param)
