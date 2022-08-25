@@ -237,9 +237,33 @@ struct l23_update_info {
 	bool update_src_mac;
 };
 
+struct rswitch_psfp_gate {
+	struct rswitch_private *priv;
+	bool enable; //FWPGFCi
+	bool select_gptp_timer; //FWPGFCi
+	bool ipv_update; // FWPGFGCi
+	bool throttle_mode; // FWPGFGCi
+	u8 initial_state; //FWPGFIGSCi
+	u8 entry_num; // FWPGFENCi Sets the number of entries used by gate i schedule in gate RAM.
+	u8 entry_open_num; //FWPGFENMi
+	u8 address_learn; // FWPGFGL0
+	u8 state_learn; // FWPGFGL1
+	u32 gate_time; // FWPGFGL1
+	u8 index; //i
+	u32 admin_cycle; // FWPGFCTCi Configure the cycle time for Gate filter i ???
+	u32 jitter; // FWPGFHCCi used for calibration
+	u32 addr_conf; // FWPGFCi Gate filter Configuration Address
+	u64 timer; // FWPGFCSTC0/1i Time at which Gate Filter scheduler i should start/change configuration
+};
+
+struct rswitch_psfp_param {
+	struct rswitch_psfp_gate gate;
+};
+
 struct l3_ipv4_fwd_param {
 	struct rswitch_private *priv;
 	struct l23_update_info l23_info;
+	struct rswitch_psfp_param psfp;
 	u32 src_ip;
 	union {
 		u32 dst_ip;

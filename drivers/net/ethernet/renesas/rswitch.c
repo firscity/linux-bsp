@@ -814,6 +814,9 @@ enum rswitch_gwca_mode {
 /* L3 Entry Delete */
 #define LTHED (BIT(16))
 
+#define GFRIOG (BIT(0))
+#define GFRR (BIT(1))
+
 /* Update TTL */
 #define L23UTTLUL (BIT(16))
 /* Update destination MAC */
@@ -2156,6 +2159,94 @@ static int rswitch_setup_l23_update(struct l23_update_info *l23_info)
 	return rs_read32(l23_info->priv->addr + FWL23URLR);
 }
 
+#define FWPGFCi(i) (FWPGFC0 + (0x40 * (i)))
+#define FWPGFIGSCi(i) (FWPGFIGSC0 + (0x40 * (i)))
+#define FWPGFHCCi(i) (FWPGFHCC0 + (0x40 * (i)))
+#define FWPGFGCi(i) (FWPGFGC0 + (0x40 * (i)))
+#define FWPGFENCi(i) (FWPGFENC0 + (0x40 * (i)))
+#define FWPGFCSTC0i(i) (FWPGFCSTC00 + (0x40 * (i)))
+#define FWPGFCSTC1i(i) (FWPGFCSTC10 + (0x40 * (i)))
+#define FWPGFCTCi(i) (FWPGFCTC0 + (0x40 * (i)))
+
+/* Gate Filter enable */
+#define GFE (BIT(0))
+/* Gate Filter Config Change */
+#define GFCC (BIT(1))
+/* Gate Filter Config Impossible */
+#define GFCI (BIT(2))
+/* Gate Filter Timer Select */
+#define GFTS (BIT(8))
+/* Gate filter Configuration Address */
+#define GFCA_SHIFT(GFCA) ((GFCA) << 16)
+#define GFGSL_OPEN (BIT(28))
+#define GFGSL_CLOSE (0)
+#define GL (BIT(31))
+
+static int gate_idx = 0;
+
+static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
+{
+	u32 open_time = 100000000;
+	u32 close_time = 100000000;
+	u32 gate_status = 0;
+	int i = 0;
+
+	// Enable access to gate filter from unsecure APB
+	rs_write32(BIT(gate_idx), gate->priv->addr + FWSCR39);
+
+	gate_status = rs_read32(gate->priv->addr + FWPGFCi(gate_idx));
+	while (i < 1000 && (gate_status & GFCI)) {
+		gate_status = rs_read32(gate->priv->addr + FWPGFCi(gate_idx));
+		i++;
+	}
+
+	rs_write32(0, gate->priv->addr + FWPGFIGSCi(gate_idx));
+	// Calibration
+	rs_write32(10000, gate->priv->addr + FWPGFHCCi(gate_idx));
+	pr_err("%s %d FWPGFHCCi(gate_idx) = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFHCCi(gate_idx)));
+	// Mode IPV update disabled, gate filter normal mode
+	rs_write32(0, gate->priv->addr + FWPGFGCi(gate_idx));
+
+	// Set number of sched entries
+	rs_write32(2, gate->priv->addr + FWPGFENCi(gate_idx));
+	pr_err("%s %d FWPGFENCi(gate_idx) = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENCi(gate_idx)));
+
+	rs_write32(10000, gate->priv->addr + FWPGFCSTC0i(gate_idx));
+	pr_err("%s %d FWPGFCSTC0i(gate_idx) = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCSTC0i(gate_idx)));
+
+	rs_write32(0, gate->priv->addr + FWPGFCSTC1i(gate_idx));
+	rs_write32(open_time + close_time, gate->priv->addr + FWPGFCTCi(gate_idx));
+	pr_err("%s %d FWPGFCTCi(gate_idx) = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCTCi(gate_idx)));
+
+	// There should be a cycle to add all entries
+	// Gate entry j learn flow
+	// #1
+	rs_write32(0, gate->priv->addr + FWPGFGL0);
+	rs_write32(open_time | GFGSL_OPEN, gate->priv->addr + FWPGFGL1);
+
+	if (rswitch_reg_wait(gate->priv->addr, FWPGFGLR, GL, 0)) {
+		pr_err("%s %d GATE leran is failed FWPGFGLR = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFGLR));
+		return -1;
+	}
+
+	//#2
+	rs_write32(0, gate->priv->addr + FWPGFGL0);
+	rs_write32(GFGSL_CLOSE, gate->priv->addr + FWPGFGL1);
+
+	if (rswitch_reg_wait(gate->priv->addr, FWPGFGLR, GL, 0)) {
+		pr_err("%s %d GATE leran is failed FWPGFGLR = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFGLR));
+		return -1;
+	}
+
+	pr_err("%s %d FWPGFSM0 = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
+	rs_write32(GFE, gate->priv->addr + FWPGFCi(gate_idx));
+	pr_err("%s %d FWPGFSM0 = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
+
+	pr_err("%s %d FWPGFCi = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCi(gate_idx)));
+
+	return 0;
+}
+
 static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 {
 	struct rswitch_private *priv = param->priv;
@@ -2165,6 +2256,10 @@ static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 			param->l23_info.update_ttl) {
 			rswitch_setup_l23_update(&param->l23_info);
 		}
+	}
+
+	if (!delete && param->psfp.gate.enable) {
+		rswitch_setup_psfp_gate(&param->psfp.gate);
 	}
 
 	if (delete)
@@ -2177,7 +2272,11 @@ static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 	rs_write32(param->src_ip, priv->addr + FWLTHTL3);
 	rs_write32(param->dst_ip, priv->addr + FWLTHTL4);
 
-	rs_write32(0, priv->addr + FWLTHTL5);
+	// TODO: add GATE number, currently it equals zero
+	if (param->psfp.gate.enable)
+		rs_write32(gate_idx | BIT(15), priv->addr + FWLTHTL5);
+	else
+		rs_write32(0, priv->addr + FWLTHTL5);
 	rs_write32(0, priv->addr + FWLTHTL6);
 	rs_write32(param->l23_info.routing_number | LTHRVL | param->slv << 16, priv->addr + FWLTHTL7);
 	if (param->enable_sub_dst)
@@ -2186,7 +2285,11 @@ static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 		rs_write32(0, priv->addr + FWLTHTL80 + 4 * RSWITCH_HW_NUM_TO_GWCA_IDX(priv->gwca.index));
 	rs_write32(param->dv, priv->addr + FWLTHTL9);
 
-	return rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0);
+	rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0);
+
+	pr_err("%s %d FWLTHTLR = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTLR));
+
+	return 0;
 }
 
 int rswitch_add_l3fwd(struct l3_ipv4_fwd_param *param)
@@ -2566,6 +2669,8 @@ static int rswitch_add_ipv4_dst_route(struct rswitch_ipv4_route *routing_list, s
 	param_list->param->l23_info.routing_port_valid = 0x3F;
 	param_list->param->l23_info.routing_number = rswitch_rn_get(priv);
 	memcpy(param_list->param->l23_info.dst_mac, dev->ndev->dev_addr, ETH_ALEN);
+	param_list->param->psfp.gate.enable = true;
+	param_list->param->psfp.gate.priv = priv;
 
 	ret = rswitch_add_l3fwd(param_list->param);
 	if (ret)
@@ -3588,6 +3693,7 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 	rs_write32(0xffffffff, priv->addr + FWSCR12);
 	/* Enable access from unsecure APB for the first 32 cascade filters */
 	rs_write32(0xffffffff, priv->addr + FWSCR20);
+
 	/* Init parameters for IPv4/v6 hash extract */
 	rs_write32(BIT(22) | BIT(23), priv->addr + FWIP4SC);
 	/* Reset L3 table */
@@ -3598,6 +3704,10 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 	rs_write32(LTHTIOG, priv->addr + FWL23UTIM);
 	/* TODO: Check result */
 	rswitch_reg_wait(priv->addr, FWL23UTIM, BIT(1), 1);
+	/* Reset gate RAM */
+	rs_write32(GFRIOG, priv->addr + FWPGFRIM);
+	/* TODO: Check result */
+	rswitch_reg_wait(priv->addr, FWPGFRIM, GFRR, 1);
 	/* TODO: add chrdev for fwd */
 	/* TODO: add proc for fwd */
 }
