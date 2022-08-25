@@ -16,6 +16,7 @@ enum rswitch_tc_action {
 	ACTION_DROP = BIT(0),
 	ACTION_MIRRED_REDIRECT = BIT(1),
 	ACTION_CHANGE_DMAC = BIT(2),
+	ACTION_GATE = BIT(3),
 };
 
 struct rswitch_tc_filter {

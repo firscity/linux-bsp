@@ -8,6 +8,8 @@
 #include "rswitch.h"
 #include "rswitch_tc_filters.h"
 
+#include <net/tc_act/tc_gate.h>
+
 static int rswitch_tc_flower_validate_match(struct flow_rule *rule)
 {
 	struct flow_dissector *dissector = rule->match.dissector;
@@ -69,6 +71,8 @@ static int rswitch_tc_flower_validate_action(struct rswitch_device *rdev,
 				return -EOPNOTSUPP;
 			}
 			dmac_change = true;
+			break;
+		case FLOW_ACTION_GATE:
 			break;
 		default:
 			pr_err("Unsupported for offload action id = %d\n", act->id);
@@ -136,6 +140,17 @@ static int rswitch_tc_flower_setup_action(struct rswitch_tc_filter *f,
 			f->action |= ACTION_CHANGE_DMAC;
 			rswitch_parse_pedit(f, act);
 			break;
+		case FLOW_ACTION_GATE:
+			f->action |= ACTION_GATE;
+			pr_err("%s %d act->gate.index = 0x%x", __func__, __LINE__, act->gate.index);
+			pr_err("%s %d act->gate.num_entries = 0x%x", __func__, __LINE__, act->gate.num_entries);
+			for (i = 0; i < act->gate.num_entries; i++) {
+				pr_err("%s %d act->gate.entries[i].gate_state = 0x%x", __func__, __LINE__, act->gate.entries[i].gate_state);
+				pr_err("%s %d act->gate.entries[i].interval = 0x%x", __func__, __LINE__, act->gate.entries[i].interval);
+				pr_err("%s %d act->gate.entries[i].ipv = 0x%x", __func__, __LINE__, act->gate.entries[i].ipv);
+				pr_err("%s %d act->gate.entries[i].maxoctets = 0x%x", __func__, __LINE__, act->gate.entries[i].maxoctets);
+			}
+			return -EOPNOTSUPP;
 		default:
 			/*
 			 * Should not come here, such action will be dropped by
