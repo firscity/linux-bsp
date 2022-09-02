@@ -2180,22 +2180,29 @@ static int rswitch_setup_l23_update(struct l23_update_info *l23_info)
 #define GFCA_SHIFT(GFCA) ((GFCA) << 16)
 #define GFGSL_OPEN (BIT(28))
 #define GFGSL_CLOSE (0)
-#define GL (BIT(31)) 
+#define GL (BIT(31))
+
+static int gate_idx = 0;
 
 static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
 {
+	static bool setup = false;
 	// TODO: add manageemnt
-	static int gate_idx = 0;
 	static u32 gate_address = 0;
-	u32 open_time = 100000000;
+	u32 open_time = 10000000;
 	u32 close_time = open_time * 2;
 	u32 gate_status = 0;
 	int i = 0;
 	//u32 FWPGFC_val = GFE | GFCC | GFCA_SHIFT(gate->addr_conf);
+	if (setup)
+		return 0;
+
+	//rs_write32(GFTS, gate->priv->addr + FWPGFCi(gate_idx));
 
 	pr_err("%s %d\n", __func__, __LINE__);
-	rs_write32(GFTS, gate->priv->addr + FWPGFCi(gate_idx));
-	//if (gate->select_gptp_timer)
+	pr_err("%s %d FWPGFSM0 = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
+	//rs_write32(GFTS, gate->priv->addr + FWPGFCi(gate_idx));
+	//if (gate->select_gptp_timer)FWPGFSM
 	//	FWPGFC_val |= GFTS;
 
 	gate_status = rs_read32(gate->priv->addr + FWPGFCi(gate_idx));
@@ -2218,48 +2225,65 @@ static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
 	//}
 	//pr_err("%s %d\n", __func__, __LINE__);
 
-	//Initial gate state, opened, IPV = 0
-	rs_write32(BIT(0), gate->priv->addr + FWPGFIGSCi(gate_idx));
+	rs_write32(0, gate->priv->addr + FWPGFIGSCi(gate_idx));
 	// Calibration
-	rs_write32(0, gate->priv->addr + FWPGFHCCi(gate_idx));
+	rs_write32(10000, gate->priv->addr + FWPGFHCCi(gate_idx));
+	pr_err("%s %d FWPGFHCCi(gate_idx) = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFHCCi(gate_idx)));
 	// Mode IPV update disabled, gate filter normal mode
 	rs_write32(0, gate->priv->addr + FWPGFGCi(gate_idx));
+
+
 	// Set number of sched entries
 	rs_write32(1, gate->priv->addr + FWPGFENCi(gate_idx));
-	rs_write32(0, gate->priv->addr + FWPGFCSTC0i(gate_idx));
+	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENCi(gate_idx)));
+	rs_write32(close_time, gate->priv->addr + FWPGFCSTC0i(gate_idx));
+	pr_err("%s %d FWPGFCSTC0i(gate_idx) = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCSTC0i(gate_idx)));
 	rs_write32(0, gate->priv->addr + FWPGFCSTC1i(gate_idx));
 	rs_write32(open_time + close_time, gate->priv->addr + FWPGFCTCi(gate_idx));
+	pr_err("%s %d FWPGFCTCi(gate_idx) = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCTCi(gate_idx)));
 
 
 	// There should be a cycle to add all entries
 	//Gate entry j learn flow
 	// #1
+	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENM0 + 0x40 * gate_idx));
 #define IPV_VAL (BIT(29) | BIT(30) | BIT(31))
 	rs_write32(0, gate->priv->addr + FWPGFGL0);
-	rs_write32(open_time | GFGSL_OPEN | IPV_VAL, gate->priv->addr + FWPGFGL1);
+	rs_write32(open_time | GFGSL_OPEN, gate->priv->addr + FWPGFGL1);
 
 	if (rswitch_reg_wait(gate->priv->addr, FWPGFGLR, GL, 0)) {
 		pr_err("%s %d GATE leran is failed FWPGFGLR = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFGLR));
 		return -1;
 	}
 
+	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENM0 + 0x40 * gate_idx));
+#if 0
 	//#2
-	rs_write32(1, gate->priv->addr + FWPGFGL0);
-	rs_write32(close_time | GFGSL_CLOSE, gate->priv->addr + FWPGFGL1);
+	rs_write32(0, gate->priv->addr + FWPGFGL0);
+	rs_write32(GFGSL_CLOSE, gate->priv->addr + FWPGFGL1);
 
 	if (rswitch_reg_wait(gate->priv->addr, FWPGFGLR, GL, 0)) {
 		pr_err("%s %d GATE leran is failed FWPGFGLR = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFGLR));
 		return -1;
 	}
 
-	if (rswitch_reg_wait(gate->priv->addr, FWPGFCi(gate_idx), GFE, 1)) {
-		pr_err("%s %d GATE enable failed FWPGFCi = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCi(gate_idx)));
-		//return -1;
-	}
+	pr_err("%s %d FWPGFSM0 = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
 
+	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENM0 + 0x40 * gate_idx));
+
+	//if (rswitch_reg_wait(gate->priv->addr, FWPGFCi(gate_idx), GFE, 1)) {
+	//	pr_err("%s %d GATE enable failed FWPGFCi = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCi(gate_idx)));
+	//	//return -1;
+	//}
+#endif
+
+	pr_err("%s %d FWPGFSM0 = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
 	rs_write32(GFE, gate->priv->addr + FWPGFCi(gate_idx));
+	pr_err("%s %d FWPGFSM0 = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
 
 	pr_err("%s %d FWPGFCi = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCi(gate_idx)));
+	rs_write32(0x1 | BIT(16), gate->priv->addr + FWSCR39);
+	setup = true;
 	return 0;
 }
 
@@ -2290,7 +2314,7 @@ static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 
 	// TODO: add GATE number, currently it equals zero
 	if (param->psfp.gate.enable)
-		rs_write32(BIT(15), priv->addr + FWLTHTL5);
+		rs_write32(gate_idx | BIT(15), priv->addr + FWLTHTL5);
 	else
 		rs_write32(0, priv->addr + FWLTHTL5);
 	rs_write32(0, priv->addr + FWLTHTL6);
@@ -2301,7 +2325,11 @@ static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 		rs_write32(0, priv->addr + FWLTHTL80 + 4 * RSWITCH_HW_NUM_TO_GWCA_IDX(priv->gwca.index));
 	rs_write32(param->dv, priv->addr + FWLTHTL9);
 
-	return rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0);
+	rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0);
+
+	pr_err("%s %d FWLTHTLR = 0x%x\n", __func__, __LINE__, rs_read32(priv->addr + FWLTHTLR));
+
+	return 0;
 }
 
 int rswitch_add_l3fwd(struct l3_ipv4_fwd_param *param)
@@ -3706,7 +3734,10 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 	/* Enable access from unsecure APB for the first 32 cascade filters */
 	rs_write32(0xffffffff, priv->addr + FWSCR20);
 	/* Enable access from unsecure APB for Gate filter */
-	rs_write32(0xffffffff, priv->addr + FWSCR39);
+	//rs_write32(0xffffffff, priv->addr + FWSCR38);
+	//rs_write32(0x1 | BIT(16), priv->addr + FWSCR39);
+	//rs_write32(0xffffffff, priv->addr + FWSCR0);
+	pr_err("%s %d FWSCR39 = 0x%x", __func__, __LINE__, rs_read32(priv->addr + FWSCR39));
 	
 	/* Init parameters for IPv4/v6 hash extract */
 	rs_write32(BIT(22) | BIT(23), priv->addr + FWIP4SC);
@@ -3722,6 +3753,7 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 	rs_write32(GFRIOG, priv->addr + FWPGFRIM);
 	/* TODO: Check result */
 	rswitch_reg_wait(priv->addr, FWPGFRIM, GFRR, 1);
+	pr_err("%s %d FWPGFRIM = 0x%x", __func__, __LINE__, rs_read32(priv->addr + FWPGFRIM));
 	/* TODO: add chrdev for fwd */
 	/* TODO: add proc for fwd */
 }
@@ -3802,6 +3834,31 @@ static void rswitch_deinit(struct rswitch_private *priv)
 	rswitch_desc_free(priv);
 }
 
+static struct workqueue_struct *test_wq;
+static struct delayed_work test_dwq;
+static struct rswitch_private *glob_priv;
+
+void dump_status(struct work_struct *work)
+{
+	int i = 0;
+
+    for (i = 0; i < 5; i++) {
+		pr_err("%s %d FWEIS0%d = 0x%x", __func__, __LINE__, i, rs_read32(glob_priv->addr + FWEIS00 + 0x10 * i));
+	}
+
+	for (i = 0; i < 8; i++) {
+		pr_err("%s %d FWPGFDCN%d = 0x%x", __func__, __LINE__, i, rs_read32(glob_priv->addr + FWPGFDCN0 + 0x10 * i));
+	}
+
+	pr_err("%s %d FWEIS1 = 0x%x", __func__, __LINE__, rs_read32(glob_priv->addr + FWEIS1));
+	pr_err("%s %d FWEIS2 = 0x%x", __func__, __LINE__, rs_read32(glob_priv->addr + FWEIS2));
+	pr_err("%s %d FWEIS3 = 0x%x", __func__, __LINE__, rs_read32(glob_priv->addr + FWEIS3));
+	pr_err("%s %d FWEIS4 = 0x%x", __func__, __LINE__, rs_read32(glob_priv->addr + FWEIS4));
+	pr_err("%s %d FWEIS5 = 0x%x", __func__, __LINE__, rs_read32(glob_priv->addr + FWEIS5));
+
+	queue_delayed_work(test_wq, &test_dwq, msecs_to_jiffies(5000));
+}
+
 static int renesas_eth_sw_probe(struct platform_device *pdev)
 {
 	struct rswitch_private *priv;
@@ -3823,6 +3880,8 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	priv->ptp_priv = rtsn_ptp_alloc(pdev);
 	if (!priv->ptp_priv)
 		return -ENOMEM;
+
+	glob_priv = priv;
 
 	if (!parallel_mode)
 		parallel_mode = of_property_read_bool(pdev->dev.of_node, "parallel_mode");
@@ -3898,6 +3957,22 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	rn->priv = priv;
 
 	priv->fib_nb.notifier_call = rswitch_fib_event;
+
+	rs_write32(0xffffffff, priv->addr + FWEIE00);
+	rs_write32(0xffffffff, priv->addr + FWEIE00 + 0x10);
+	rs_write32(0xffffffff, priv->addr + FWEIE00 + 0x20);
+	rs_write32(0xffffffff, priv->addr + FWEIE00 + 0x30);
+	rs_write32(0xffffffff, priv->addr + FWEIE00 + 0x40);
+	rs_write32(0xffffffff, priv->addr + FWEIE1);
+	rs_write32(0xffffffff, priv->addr + FWEIE2);
+	rs_write32(0xffffffff, priv->addr + FWEIE3);
+	rs_write32(0xffffffff, priv->addr + FWEIE4);
+	rs_write32(0xffffffff, priv->addr + FWEIE5);
+	
+
+	test_wq = create_workqueue("test_wq");
+	INIT_DELAYED_WORK(&test_dwq, dump_status);
+	queue_delayed_work(test_wq, &test_dwq, msecs_to_jiffies(5000));
 
 	return register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
 }
