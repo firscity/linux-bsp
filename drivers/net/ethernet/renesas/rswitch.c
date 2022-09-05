@@ -2183,27 +2183,19 @@ static int rswitch_setup_l23_update(struct l23_update_info *l23_info)
 #define GL (BIT(31))
 
 static int gate_idx = 0;
+static bool setup = false;
 
 static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
 {
-	static bool setup = false;
-	// TODO: add manageemnt
 	static u32 gate_address = 0;
-	u32 open_time = 10000000;
-	u32 close_time = open_time * 2;
+	u32 open_time = 100000000;
+	u32 close_time = 100000000;
 	u32 gate_status = 0;
 	int i = 0;
-	//u32 FWPGFC_val = GFE | GFCC | GFCA_SHIFT(gate->addr_conf);
 	if (setup)
 		return 0;
 
-	//rs_write32(GFTS, gate->priv->addr + FWPGFCi(gate_idx));
-
-	pr_err("%s %d\n", __func__, __LINE__);
 	pr_err("%s %d FWPGFSM0 = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
-	//rs_write32(GFTS, gate->priv->addr + FWPGFCi(gate_idx));
-	//if (gate->select_gptp_timer)FWPGFSM
-	//	FWPGFC_val |= GFTS;
 
 	gate_status = rs_read32(gate->priv->addr + FWPGFCi(gate_idx));
 	pr_err("%s %d i = %d gate_status = 0x%x\n", __func__, __LINE__, i, gate_status);
@@ -2213,30 +2205,18 @@ static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
 		i++;
 	}
 
-	//if (rswitch_reg_wait(gate->priv->addr, FWPGFCi(gate_idx), GFCI, 0)) {
-	//	pr_err("%s %d GATE is impossible", __func__, __LINE__);
-	//	return -1;
-	//}
-	pr_err("%s %d\n", __func__, __LINE__);
-
-	//if (rswitch_reg_wait(gate->priv->addr, FWPGFCi(gate_idx), GFE, 0)) {
-	//	pr_err("%s %d GATE is already enabled", __func__, __LINE__);
-	//	return -1;
-	//}
-	//pr_err("%s %d\n", __func__, __LINE__);
-
 	rs_write32(0, gate->priv->addr + FWPGFIGSCi(gate_idx));
 	// Calibration
-	rs_write32(10000, gate->priv->addr + FWPGFHCCi(gate_idx));
+	rs_write32(0, gate->priv->addr + FWPGFHCCi(gate_idx));
 	pr_err("%s %d FWPGFHCCi(gate_idx) = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFHCCi(gate_idx)));
 	// Mode IPV update disabled, gate filter normal mode
 	rs_write32(0, gate->priv->addr + FWPGFGCi(gate_idx));
 
 
 	// Set number of sched entries
-	rs_write32(1, gate->priv->addr + FWPGFENCi(gate_idx));
+	rs_write32(0, gate->priv->addr + FWPGFENCi(gate_idx));
 	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENCi(gate_idx)));
-	rs_write32(close_time, gate->priv->addr + FWPGFCSTC0i(gate_idx));
+	rs_write32(0, gate->priv->addr + FWPGFCSTC0i(gate_idx));
 	pr_err("%s %d FWPGFCSTC0i(gate_idx) = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCSTC0i(gate_idx)));
 	rs_write32(0, gate->priv->addr + FWPGFCSTC1i(gate_idx));
 	rs_write32(open_time + close_time, gate->priv->addr + FWPGFCTCi(gate_idx));
@@ -2249,7 +2229,7 @@ static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
 	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENM0 + 0x40 * gate_idx));
 #define IPV_VAL (BIT(29) | BIT(30) | BIT(31))
 	rs_write32(0, gate->priv->addr + FWPGFGL0);
-	rs_write32(open_time | GFGSL_OPEN, gate->priv->addr + FWPGFGL1);
+	rs_write32(open_time | GFGSL_OPEN | IPV_VAL, gate->priv->addr + FWPGFGL1);
 
 	if (rswitch_reg_wait(gate->priv->addr, FWPGFGLR, GL, 0)) {
 		pr_err("%s %d GATE leran is failed FWPGFGLR = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFGLR));
@@ -2257,7 +2237,7 @@ static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
 	}
 
 	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENM0 + 0x40 * gate_idx));
-#if 0
+
 	//#2
 	rs_write32(0, gate->priv->addr + FWPGFGL0);
 	rs_write32(GFGSL_CLOSE, gate->priv->addr + FWPGFGL1);
@@ -2270,12 +2250,6 @@ static int rswitch_setup_psfp_gate(struct rswitch_psfp_gate *gate)
 	pr_err("%s %d FWPGFSM0 = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
 
 	pr_err("%s %d num entries = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFENM0 + 0x40 * gate_idx));
-
-	//if (rswitch_reg_wait(gate->priv->addr, FWPGFCi(gate_idx), GFE, 1)) {
-	//	pr_err("%s %d GATE enable failed FWPGFCi = 0x%x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFCi(gate_idx)));
-	//	//return -1;
-	//}
-#endif
 
 	pr_err("%s %d FWPGFSM0 = %x", __func__, __LINE__, rs_read32(gate->priv->addr + FWPGFSM0));
 	rs_write32(GFE, gate->priv->addr + FWPGFCi(gate_idx));
