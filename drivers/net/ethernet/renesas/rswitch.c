@@ -2374,6 +2374,90 @@ int rswitch_setup_pf(struct rswitch_pf_param *pf_param)
 	return cascade_idx;
 }
 
+static void dump_cascade_filters(struct rswitch_private *priv)
+{
+	void __iomem *addr = priv->addr;
+	int i, j;
+	int num_cadf = 3; /* 3 cascade filter for test */
+	int num_cmfm = 7;
+
+	for (i = 0; i < num_cadf; i++) {
+		pr_err("FWCGC#%d = 0x%08x\n", i, rs_read32(addr + FWCFCi(i)));
+
+		for (j = 0; j < num_cmfm; j++) {
+			pr_cont("FWCFMC(%d,%d) ", i, j);
+		}
+		pr_cont("\n");
+
+		for (j = 0; j < num_cmfm; j++) {
+			pr_cont("0x%09x ", rs_read32(addr + FWCFMCij(i, j)));
+		}
+		pr_cont("\n");
+	}
+	pr_err("\n");
+}
+
+void test_pf_issue(struct rswitch_private *priv)
+{
+	int i, j;
+	u32 cascade_idx;
+	u32 pf_num;
+	u32 cascade_num = 3;
+	u32 cascade_idxs[3] = {0};
+
+	/* Init loop, write some values to 3 cascade filters */
+	for (i = 0; i < cascade_num; i++) {
+		/* Take first free cascade filter */
+		cascade_idx = find_first_zero_bit(priv->filters.cascade, PFL_CADF_N);
+		set_bit(cascade_idx, priv->filters.cascade);
+
+		pr_err("%s:%d Took cascade filter #%d\n Regiters state:", __func__, __LINE__, cascade_idx);
+		dump_cascade_filters(priv);
+
+		pr_err("%s:%d Disabling cascade filter #%d via FWCGC before setup\n", __func__, __LINE__, cascade_idx);
+		rs_write32(RSWITCH_PF_DISABLE_FILTER, priv->addr + FWCFCi(cascade_idx));
+		/*
+		 * (BUG: After disabling e.g. filter #1 the values of mapping registers filter #0
+		 * will be copied to mapping registers in filter #1. It works for all cascade filters)
+		 */
+		pr_err("%s:%d Regiters state after disabling cascade filter #%d:", __func__, __LINE__, cascade_idx);
+		dump_cascade_filters(priv);
+
+		/* Initialize current cascade filter with some 4 byte perfect filters, their types and values are not matter */
+		/* First will contain 6 PF, second - 4, third - 2; this will demonstrate issue */
+		for (j = 0; j < (6 - i * 2); j++) {
+			u32 pf_idx = get_four_byte_filter(priv);
+			set_bit(pf_idx, priv->filters.four_bytes);
+
+			pf_num = FBFILTER_NUM(pf_idx);
+			rs_write32(pf_num | RSWITCH_PF_ENABLE_FILTER, priv->addr + FWCFMCij(i, j));
+		}
+
+		pr_err("%s:%d Setup cascade filter #%d; Registers state:\n", __func__, __LINE__, cascade_idx);
+		dump_cascade_filters(priv);
+
+		pr_err("%s:%d enabling cascade filter #%d\n", __func__, __LINE__, cascade_idx);
+		rs_write32(0x000f0002, priv->addr + FWCFCi(cascade_idx));
+
+		cascade_idxs[i] = cascade_idx;
+		pr_err("\n");
+	}
+
+	pr_err("\n");
+
+	/* De-init loop, disable cascade filters from #2 to #0 (BUG: mapping values for #2 will remain!) */
+	for (i = cascade_num - 1; i >= 0; i--) {
+		pr_err("%s:%d disabling cascade filter #%d\n Registers state:\n", __func__, __LINE__, i);
+		rs_write32(RSWITCH_PF_DISABLE_FILTER, priv->addr + FWCFCi(cascade_idxs[i]));
+		for (j = 0; j < 7; j++) {
+			rs_write32(RSWITCH_PF_DISABLE_FILTER, priv->addr + FWCFMCij(i, j));
+		}
+		dump_cascade_filters(priv);
+	}
+
+	pr_err("\n");
+}
+
 int rswitch_rn_get(struct rswitch_private *priv)
 {
 	int index;
@@ -3856,6 +3940,11 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 
 	priv->fib_nb.notifier_call = rswitch_fib_event;
 
+	/* This will be called on startup (for test) */
+	test_pf_issue(priv);
+
+	/* Prevent FIB from utilizing of perfect filters */
+	return 0;
 	return register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
 }
 
