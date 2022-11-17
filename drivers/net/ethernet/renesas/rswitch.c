@@ -2236,7 +2236,10 @@ void rswitch_put_pf(struct l3_ipv4_fwd_param *param)
 
 	/* Disable and free cascade filter */
 	rs_write32(RSWITCH_PF_DISABLE_FILTER, param->priv->addr + FWCFCi(param->pf_cascade_index));
-	clear_bit(param->pf_cascade_index, param->priv->filters.cascade);
+
+	/* Cascade filter #0 is reserved for default route and should not be marked as free */
+	if (param->pf_cascade_index)
+		clear_bit(param->pf_cascade_index, param->priv->filters.cascade);
 
 	/* Free all used perfect filters */
 	for (i = 0; i < pf_used; i++) {
@@ -2562,11 +2565,53 @@ const struct net_device_ops rswitch_netdev_ops = {
 //	.ndo_change_mtu = eth_change_mtu,
 };
 
+static int rswitch_setup_default_ipv4_route(struct rswitch_private *priv)
+{
+	/*
+	 * Default route should be triggered by cascade filter with lowest priority.
+	 * For R-Switch it is filter with smallest index - 0, that was reserved
+	 * in rswitch_init().
+	 */
+	int i, cascade_idx = 0;
+	u32 value, cfg;
+	struct rswitch_pf_entry pf = {0};
+
+	if (rs_read32(priv->addr + FWCFCi(cascade_idx)) & RSWITCH_PF_ENABLE_FILTER) {
+		pr_err("Default route already offloaded to R-Switch!");
+		return -EBUSY;
+	}
+
+	rs_write32(RSWITCH_PF_DISABLE_FILTER, priv->addr + FWCFCi(cascade_idx));
+
+	/* Get 1 two-byte perfect filter and set it to match all IPv4 packets */
+	pf.type = PF_TWO_BYTE;
+	if (rswitch_get_pf_config(priv, &pf) < 0)
+		return -E2BIG;
+
+	cfg = SNOOPING_BUS_OFFSET(RSWITCH_IP_VERSION_OFFSET);
+	cfg |= TWBFM_VAL(RSWITCH_PF_OFFSET_FILTERING) | RSWITCH_PF_MASK_MODE;
+	/* Reverse mask is omitted (0), because we are fully using two-byte filter */
+	value = ETH_P_IP;
+
+	rs_write32(value, pf.cfg0_addr);
+	rs_write32(cfg, pf.offs_addr);
+
+	rs_write32(pf.pf_num | RSWITCH_PF_ENABLE_FILTER, priv->addr + FWCFMCij(cascade_idx, 0));
+	/* Zero all unused mapping registers */
+	for (i = 1; i < MAX_PF_ENTRIES; i++) {
+		rs_write32(RSWITCH_PF_DISABLE_FILTER, priv->addr + FWCFMCij(cascade_idx, i));
+	}
+
+	/* Set cascade filter to match from all sources */
+	rs_write32(0x000f007f, priv->addr + FWCFCi(cascade_idx));
+
+	return 0;
+}
+
 static int rswitch_add_ipv4_dst_route(struct rswitch_ipv4_route *routing_list, struct rswitch_device *dev, u32 ip)
 {
 	struct rswitch_private *priv = dev->priv;
 	struct l3_ipv4_fwd_param_list *param_list;
-	struct rswitch_pf_param pf_param = {0};
 	int ret = 0;
 
 	param_list = kzalloc(sizeof(*param_list), GFP_KERNEL);
@@ -2579,22 +2624,30 @@ static int rswitch_add_ipv4_dst_route(struct rswitch_ipv4_route *routing_list, s
 		goto free_param_list;
 	}
 
-	pf_param.rdev = dev;
-	pf_param.all_sources = true;
+	if (routing_list->subnet) {
+		struct rswitch_pf_param pf_param = {0};
 
-	/* Match only packets with IPv4 EtherType */
-	ret = rswitch_init_mask_pf_entry(&pf_param, PF_TWO_BYTE,
-			ETH_P_IP, 0xffff, RSWITCH_IP_VERSION_OFFSET);
-	if (ret)
-		goto free_param_list;
+		pf_param.rdev = dev;
+		pf_param.all_sources = true;
 
-	/* Set destination IP matching */
-	ret = rswitch_init_mask_pf_entry(&pf_param, PF_FOUR_BYTE,
-			ip, 0xffffffff, RSWITCH_IPV4_DST_OFFSET);
-	if (ret)
-		goto free_param_list;
+		/* Match only packets with IPv4 EtherType */
+		ret = rswitch_init_mask_pf_entry(&pf_param, PF_TWO_BYTE,
+				ETH_P_IP, 0xffff, RSWITCH_IP_VERSION_OFFSET);
+		if (ret)
+			goto free_param_list;
 
-	param_list->param->pf_cascade_index = rswitch_setup_pf(&pf_param);
+		/* Set destination IP matching */
+		ret = rswitch_init_mask_pf_entry(&pf_param, PF_FOUR_BYTE,
+				ip, 0xffffffff, RSWITCH_IPV4_DST_OFFSET);
+		if (ret)
+			goto free_param_list;
+
+		param_list->param->pf_cascade_index = rswitch_setup_pf(&pf_param);
+	} else {
+		/* if subnet is zeroed - it is a default route */
+		param_list->param->pf_cascade_index = rswitch_setup_default_ipv4_route(priv);
+	}
+
 	if (param_list->param->pf_cascade_index < 0)
 		goto free_param;
 	param_list->param->priv = priv;
@@ -3754,6 +3807,9 @@ static int rswitch_init(struct rswitch_private *priv)
 	err = rswitch_request_irqs(priv);
 	if (err < 0)
 		goto out;
+
+	/* Need to reserve the lowest priority cascade filter for default route */
+	set_bit(0, priv->filters.cascade);
 
 	/* Register devices so Linux network stack can access them now */
 
