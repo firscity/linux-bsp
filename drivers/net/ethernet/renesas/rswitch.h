@@ -8,6 +8,7 @@
 #ifndef __RSWITCH_H__
 #define __RSWITCH_H__
 
+#include "linux/types.h"
 #include <linux/kernel.h>
 #include <linux/phy.h>
 #include <linux/netdevice.h>
@@ -166,7 +167,8 @@ struct rswitch_private {
 	u32 desc_bat_size;
 	phys_addr_t dev_id;
 
-	struct rswitch_device *rdev[RSWITCH_MAX_NUM_NDEV];
+	//struct rswitch_device *rdev[RSWITCH_MAX_NUM_NDEV];
+	struct list_head rdev_list;
 
 	struct rswitch_gwca gwca;
 	struct rswitch_etha etha[RSWITCH_MAX_NUM_ETHA];
@@ -183,6 +185,7 @@ struct rswitch_private {
 };
 
 struct rswitch_device {
+	struct list_head list;
 	struct rswitch_private *priv;
 	struct net_device *ndev;
 	struct napi_struct napi;
@@ -295,18 +298,17 @@ static inline u32 rswitch_mac_right_half(const u8 *addr)
 static inline bool ndev_is_rswitch_dev(const struct net_device *ndev,
 			struct rswitch_private *priv)
 {
-	int i;
+	struct rswitch_device *rdev;
 
-	for (i = 0; i < RSWITCH_MAX_NUM_NDEV; i++) {
-		struct rswitch_device *rdev = priv->rdev[i];
-
-		if (rdev && (rdev->ndev == ndev)) {
+	list_for_each_entry(rdev, &priv->rdev_list, list) {
+		if (rdev->ndev == ndev)
 			return true;
-		}
 	}
 
 	return false;
 }
+
+struct rswitch_device* ndev_to_rdev(const struct net_device *ndev);
 
 int rswitch_add_l3fwd(struct l3_ipv4_fwd_param *param);
 int rswitch_remove_l3fwd(struct l3_ipv4_fwd_param *param);

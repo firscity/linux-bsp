@@ -4,6 +4,11 @@
  * Copyright (C) 2020 Renesas Electronics Corporation
  */
 
+#include "linux/if_vlan.h"
+#include "linux/mutex.h"
+#include "linux/netdevice.h"
+#include "linux/spinlock_types.h"
+#include "linux/types.h"
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/etherdevice.h>
@@ -28,6 +33,7 @@
 #include <net/nexthop.h>
 #include <net/netns/generic.h>
 #include <net/arp.h>
+#include <net/switchdev.h>
 
 #include "rtsn_ptp.h"
 #include "rswitch.h"
@@ -1030,6 +1036,26 @@ static int rswitch_reg_wait(void __iomem *addr, u32 offs, u32 mask, u32 expected
 	return -ETIMEDOUT;
 }
 
+struct rswitch_device* ndev_to_rdev(const struct net_device *ndev)
+{
+	struct rswitch_private *priv;
+	struct rswitch_device *rdev;
+	struct rswitch_net *rn;
+
+	if (!is_vlan_dev(ndev))
+		return netdev_priv(ndev);
+
+	rn = net_generic(&init_net, rswitch_net_id);
+	priv = rn->priv;
+
+	list_for_each_entry(rdev, &priv->rdev_list, list) {
+		if (rdev->ndev == ndev)
+			return rdev;
+	}
+
+	return NULL;
+}
+
 static u32 rswitch_etha_offs(int index)
 {
 	return RSWITCH_ETHA_OFFSET + index * RSWITCH_ETHA_SIZE;
@@ -1112,6 +1138,13 @@ static bool rswitch_is_chain_rxed(struct rswitch_gwca_chain *c, u8 unexpected)
 
 void rswitch_add_ipv4_forward(struct rswitch_private *priv, u32 src_ip, u32 dst_ip);
 
+static inline bool skb_is_vlan(struct sk_buff *skb)
+{
+	char *data = (char*)skb_mac_header(skb);
+
+	return data[12] == 0x81 && data[13] == 0x00;
+}
+
 static bool rswitch_rx_chain(struct net_device *ndev, int *quota, struct rswitch_gwca_chain *c, bool learn_chain)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
@@ -1143,9 +1176,30 @@ static bool rswitch_rx_chain(struct net_device *ndev, int *quota, struct rswitch
 			skb_reset_network_header(skb);
 
 			ethhdr = (struct ethhdr*)skb_mac_header(skb);
-			skb_set_network_header(skb, sizeof(*ethhdr));
+
+			//pr_err("learn packet dev %s\n", ndev->name);
+			if (skb_is_vlan(skb)) {
+				//pr_err("vlan\n");
+				skb_set_network_header(skb, sizeof(*ethhdr) + 4);
+			} else {
+				skb_set_network_header(skb, sizeof(*ethhdr));
+			}
 
 			iphdr = ip_hdr(skb);
+			// //print ip header data
+			// pr_err("ihl %d\n", iphdr->ihl);
+			// pr_err("version %d\n", iphdr->version);
+			// pr_err("tos %d\n", iphdr->tos);
+			// pr_err("tot_len %d\n", iphdr->tot_len);
+			// pr_err("id %d\n", iphdr->id);
+			// pr_err("frag_off %d\n", iphdr->frag_off);
+			// pr_err("ttl %d\n", iphdr->ttl);
+			// pr_err("protocol %d\n", iphdr->protocol);
+			// pr_err("check %d\n", iphdr->check);
+			// pr_err("ip header: %pI4 -> %pI4\n", &iphdr->saddr, &iphdr->daddr);
+
+
+
 			rswitch_add_ipv4_forward(priv, be32_to_cpu(iphdr->saddr), be32_to_cpu(iphdr->daddr));
 		}
 
@@ -1155,7 +1209,7 @@ static bool rswitch_rx_chain(struct net_device *ndev, int *quota, struct rswitch
 		get_ts = rdev->priv->ptp_priv->tstamp_rx_ctrl & RTSN_RXTSTAMP_TYPE_V2_L2_EVENT;
 		if (get_ts) {
 			struct skb_shared_hwtstamps *shhwtstamps;
-			struct timespec64 ts;
+			struct timespec64 ts = {0};
 
 			shhwtstamps = skb_hwtstamps(skb);
 			memset(shhwtstamps, 0, sizeof(*shhwtstamps));
@@ -1250,8 +1304,8 @@ static int rswitch_tx_free(struct net_device *ndev, bool free_txed_only)
 		skb = c->skb[entry];
 		if (skb) {
 			if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
-				struct skb_shared_hwtstamps shhwtstamps;
-				struct timespec64 ts;
+				struct skb_shared_hwtstamps shhwtstamps = {0};
+				struct timespec64 ts = {0};
 
 				rswitch_get_timestamp(rdev->priv, &ts);
 				memset(&shhwtstamps, 0, sizeof(shhwtstamps));
@@ -2026,14 +2080,12 @@ static struct rswitch_device *get_dev_by_ip(struct rswitch_private *priv, u32 ip
 {
 	struct in_device *ip;
 	struct in_ifaddr *in;
+	struct rswitch_device *rdev;
 	u32 ip_addr, mask;
-	int i;
 
-	for (i = 0; i < RSWITCH_NUM_HW; i++) {
-		if (!priv->rdev[i])
-			break;
+	list_for_each_entry(rdev, &priv->rdev_list, list) {
 
-		ip = priv->rdev[i]->ndev->ip_ptr;
+		ip = rdev->ndev->ip_ptr;
 		if (ip == NULL)
 			continue;
 
@@ -2046,10 +2098,10 @@ static struct rswitch_device *get_dev_by_ip(struct rswitch_private *priv, u32 ip
 			in = in->ifa_next;
 
 			if (use_mask && (ip_search & mask) == (ip_addr & mask))
-				return priv->rdev[i];
+				return rdev;
 
 			if (ip_search == ip_addr)
-				return priv->rdev[i];
+				return rdev;
 		}
 	}
 
@@ -2123,7 +2175,7 @@ static int rswitch_hwstamp_get(struct net_device *ndev, struct ifreq *req)
 	struct rswitch_device *rdev = netdev_priv(ndev);
 	struct rswitch_private *priv = rdev->priv;
 	struct rtsn_ptp_private *ptp_priv = priv->ptp_priv;
-	struct hwtstamp_config config;
+	struct hwtstamp_config config = {0};
 
 	config.flags = 0;
 	config.tx_type = ptp_priv->tstamp_tx_ctrl ? HWTSTAMP_TX_ON :
@@ -2170,9 +2222,13 @@ static int rswitch_setup_l23_update(struct l23_update_info *l23_info)
 	}
 
 	rs_write32(l23_info->routing_number | l23_info->routing_port_valid << 16, l23_info->priv->addr + FWL23URL0);
+	//pr_err("FWL23URL0 %x\n",l23_info->routing_number | l23_info->routing_port_valid << 16);
 	rs_write32(url1_val, l23_info->priv->addr + FWL23URL1);
+	//pr_err("FWL23URL1 %x\n",url1_val);
 	rs_write32(url2_val, l23_info->priv->addr + FWL23URL2);
+	//pr_err("FWL23URL2 %x\n",url2_val);
 	rs_write32(url3_val, l23_info->priv->addr + FWL23URL3);
+	//pr_err("FWL23URL3 %x\n",url3_val);
 
 	return rs_read32(l23_info->priv->addr + FWL23URLR);
 }
@@ -2189,24 +2245,36 @@ static int rswitch_modify_l3fwd(struct l3_ipv4_fwd_param *param, bool delete)
 		}
 	}
 
-	if (delete)
+	if (delete) {
+		//pr_err("DELETE\n");
 		rs_write32(param->frame_type | LTHED, priv->addr + FWLTHTL0);
-	else
+	} else {
 		rs_write32(param->frame_type, priv->addr + FWLTHTL0);
+		//pr_err("rswitch: %s: frame_type = %x", __func__, param->frame_type);
+	}
 
 	rs_write32(0, priv->addr + FWLTHTL1);
 	rs_write32(0, priv->addr + FWLTHTL2);
 	rs_write32(param->src_ip, priv->addr + FWLTHTL3);
+	//pr_err("xswitch: %s: src_ip = %x", __func__, param->src_ip);
 	rs_write32(param->dst_ip, priv->addr + FWLTHTL4);
+	//pr_err("rswitch: %s: dst_ip = %x", __func__, param->dst_ip);
 
 	rs_write32(0, priv->addr + FWLTHTL5);
 	rs_write32(0, priv->addr + FWLTHTL6);
 	rs_write32(param->l23_info.routing_number | LTHRVL | param->slv << 16, priv->addr + FWLTHTL7);
-	if (param->enable_sub_dst)
+	//pr_err("rswitch: %s: routing_number = %lx", __func__, param->l23_info.routing_number | LTHRVL | param->slv << 16);
+	//pr_err("before sub dst\n");
+	if (param->enable_sub_dst) {
 		rs_write32(param->csd, priv->addr + FWLTHTL80 + 4 * RSWITCH_HW_NUM_TO_GWCA_IDX(priv->gwca.index));
-	else
+		//pr_err("rswitch: %s: csd = %x", __func__, param->csd);
+	} else {
 		rs_write32(0, priv->addr + FWLTHTL80 + 4 * RSWITCH_HW_NUM_TO_GWCA_IDX(priv->gwca.index));
+	}
+	//pr_err("after sub dst\n");
 	rs_write32(param->dv, priv->addr + FWLTHTL9);
+	//pr_err("rswitch: %s: dv = %x", __func__, param->dv);
+	//pr_err("DONEDONEDONE\n");
 
 	return rswitch_reg_wait(priv->addr, FWLTHTLR, LTHTL, 0);
 }
@@ -2443,7 +2511,7 @@ static int rswitch_hwstamp_set(struct net_device *ndev, struct ifreq *req)
 	struct rswitch_device *rdev = netdev_priv(ndev);
 	struct rswitch_private *priv = rdev->priv;
 	struct rtsn_ptp_private *ptp_priv = priv->ptp_priv;
-	struct hwtstamp_config config;
+	struct hwtstamp_config config = {0};
 	u32 tstamp_rx_ctrl = RTSN_RXTSTAMP_ENABLED;
 	u32 tstamp_tx_ctrl;
 
@@ -2591,7 +2659,7 @@ free_param_list:
 
 static void rswitch_fib_event_add(struct rswitch_fib_event_work *fib_work)
 {
-	struct fib_entry_notifier_info fen;
+	struct fib_entry_notifier_info fen = {0};
 	struct rswitch_ipv4_route *new_routing_list;
 	struct rswitch_device *dev;
 	struct fib_nh *nh;
@@ -2624,7 +2692,7 @@ static void rswitch_fib_event_add(struct rswitch_fib_event_work *fib_work)
 
 static void rswitch_fib_event_remove(struct rswitch_fib_event_work *fib_work)
 {
-	struct fib_entry_notifier_info fen;
+	struct fib_entry_notifier_info fen = {0};
 	struct rswitch_device *dev;
 	struct fib_nh *nh;
 	struct list_head *cur, *tmp;
@@ -2974,14 +3042,15 @@ static int rswitch_gwca_chain_init(struct net_device *ndev,
 		}
 	}
 
-	if (gptp)
+	if (gptp) {
 		c->ts_ring = dma_alloc_coherent(ndev->dev.parent,
 				sizeof(struct rswitch_ext_ts_desc) *
 				(c->num_ring + 1), &c->ring_dma, GFP_KERNEL);
-	else
+	} else {
 		c->ring = dma_alloc_coherent(ndev->dev.parent,
 				sizeof(struct rswitch_ext_desc) *
 				(c->num_ring + 1), &c->ring_dma, GFP_KERNEL);
+	}
 	if (!c->ts_ring && !c->ring)
 		goto out;
 
@@ -3128,7 +3197,7 @@ static void rswitch_gwca_put(struct rswitch_private *priv,
 static int rswitch_txdmac_init(struct net_device *ndev,
 			       struct rswitch_private *priv)
 {
-	struct rswitch_device *rdev = netdev_priv(ndev);
+	struct rswitch_device *rdev = ndev_to_rdev(ndev);
 	int err;
 
 	rdev->tx_chain = rswitch_gwca_get(priv);
@@ -3167,8 +3236,9 @@ static void rswitch_txdmac_free(struct net_device *ndev,
 static int rswitch_rxdmac_init(struct net_device *ndev,
 			       struct rswitch_private *priv)
 {
-	struct rswitch_device *rdev = netdev_priv(ndev);
+	struct rswitch_device *rdev = ndev_to_rdev(ndev);
 	int err;
+
 
 	rdev->rx_default_chain = rswitch_gwca_get(priv);
 	if (!rdev->rx_default_chain)
@@ -3214,6 +3284,7 @@ static void rswitch_rxdmac_free(struct net_device *ndev,
 				struct rswitch_private *priv)
 {
 	struct rswitch_device *rdev = netdev_priv(ndev);
+
 
 	rswitch_gwca_chain_free(ndev, priv, rdev->rx_default_chain);
 	rswitch_gwca_chain_free(ndev, priv, rdev->rx_learning_chain);
@@ -3270,7 +3341,9 @@ static int rswitch_ndev_register(struct rswitch_private *priv, int index)
 	INIT_LIST_HEAD(&rdev->tc_u32_list);
 	INIT_LIST_HEAD(&rdev->tc_matchall_list);
 	INIT_LIST_HEAD(&rdev->tc_flower_list);
-	priv->rdev[index] = rdev;
+	INIT_LIST_HEAD(&rdev->list);
+	list_add_tail(&rdev->list, &priv->rdev_list);
+
 	/* TODO: netdev instance : ETHA port is 1:1 mapping */
 	if (index < RSWITCH_MAX_NUM_ETHA) {
 		rdev->port = index;
@@ -3333,10 +3406,10 @@ out_reg_netdev:
 	return err;
 }
 
-static void rswitch_ndev_unregister(struct rswitch_private *priv, int index)
+static void rswitch_ndev_unregister(struct rswitch_device *rdev)
 {
-	struct rswitch_device *rdev = priv->rdev[index];
 	struct net_device *ndev = rdev->ndev;
+	struct rswitch_private *priv = rdev->priv;
 
 	rswitch_txdmac_free(ndev, priv);
 	rswitch_rxdmac_free(ndev, priv);
@@ -3375,7 +3448,8 @@ static irqreturn_t __maybe_unused rswitch_data_irq(struct rswitch_private *priv,
 	int i;
 	int index, bit;
 
-	for (i = 0; i < priv->gwca.num_chains; i++) {
+	//for (i = 0; i < priv->gwca.num_chains; i++) {
+	for_each_set_bit(i, priv->gwca.used, priv->gwca.num_chains) {
 		c = &priv->gwca.chains[i];
 		index = c->index / 32;
 		bit = BIT(c->index % 32);
@@ -3461,6 +3535,7 @@ static int rswitch_ipv4_resolve(struct rswitch_device *rdev, u32 ip, u8 mac[ETH_
 	return err;
 }
 
+DEFINE_MUTEX(all_types_lock);
 void rswitch_add_ipv4_forward_all_types(struct l3_ipv4_fwd_param *param, struct rswitch_ipv4_route *routing_list)
 {
 	struct l3_ipv4_fwd_param_list *param_list;
@@ -3479,6 +3554,7 @@ void rswitch_add_ipv4_forward_all_types(struct l3_ipv4_fwd_param *param, struct 
 		memcpy(param_list[i].param, param, sizeof(*param));
 	}
 
+	mutex_lock(&all_types_lock);
 	param_list[0].param->frame_type = LTHSLP0v4OTHER;
 	if (rswitch_add_l3fwd(param_list[0].param))
 		goto free;
@@ -3500,6 +3576,7 @@ void rswitch_add_ipv4_forward_all_types(struct l3_ipv4_fwd_param *param, struct 
 	list_add(&param_list[1].list, &routing_list->param_list);
 	list_add(&param_list[2].list, &routing_list->param_list);
 
+	mutex_unlock(&all_types_lock);
 	return;
 
 free:
@@ -3507,17 +3584,16 @@ free:
 		kfree(param_list[j].param);
 
 	kfree(param_list);
+	mutex_unlock(&all_types_lock);
 }
 
 static struct rswitch_ipv4_route *rswitch_get_route(struct rswitch_private *priv, u32 dst_ip)
 {
 	struct rswitch_ipv4_route *routing_list;
-	struct list_head *cur;
-	int i;
+	struct rswitch_device *rdev;
 
-	for (i = 0; i < num_ndev; i++) {
-		list_for_each(cur, &priv->rdev[i]->routing_list) {
-			routing_list = list_entry(cur, struct rswitch_ipv4_route, list);
+	list_for_each_entry(rdev, &priv->rdev_list, list) {
+		list_for_each_entry(routing_list, &rdev->routing_list, list) {
 			if (routing_list->subnet == (dst_ip & routing_list->mask))
 				return routing_list;
 		}
@@ -3529,8 +3605,10 @@ static struct rswitch_ipv4_route *rswitch_get_route(struct rswitch_private *priv
 void rswitch_add_ipv4_forward(struct rswitch_private *priv, u32 src_ip, u32 dst_ip)
 {
 	struct rswitch_device *dev;
+	struct rswitch_device *real_dev;
+	struct net_device *real_ndev;
 	struct rswitch_ipv4_route *routing_list = NULL;
-	struct l3_ipv4_fwd_param param;
+	struct l3_ipv4_fwd_param param = {0};
 	u8 mac[ETH_ALEN];
 
 	if (is_l3_exist(priv, src_ip, dst_ip))
@@ -3544,7 +3622,13 @@ void rswitch_add_ipv4_forward(struct rswitch_private *priv, u32 src_ip, u32 dst_
 	if (rswitch_ipv4_resolve(dev, dst_ip, mac))
 		return;
 
-	param.dv = BIT(dev->port);
+	if (is_vlan_dev(dev->ndev)) {
+		real_ndev = vlan_dev_real_dev(dev->ndev);
+		real_dev = netdev_priv(real_ndev);
+		param.dv = BIT(real_dev->port);
+	} else {
+		param.dv = BIT(dev->port);
+	}
 	param.csd = 0;
 	param.enable_sub_dst = false;
 	memcpy(param.l23_info.dst_mac, mac, ETH_ALEN);
@@ -3567,6 +3651,7 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 {
 	int i;
 	int gwca_hw_idx = RSWITCH_HW_NUM_TO_GWCA_IDX(priv->gwca.index);
+	struct rswitch_device *rdev;
 
 	for (i = 0; i < RSWITCH_NUM_HW; i++) {
 		rs_write32(FWPC0_DEFAULT, priv->addr + FWPC00 + (i * 0x10));
@@ -3577,9 +3662,9 @@ static void rswitch_fwd_init(struct rswitch_private *priv)
 	 * ETHA0 = forward to GWCA0, GWCA0 = forward to ETHA0,...
 	 * Currently, always forward to GWCA1.
 	 */
-	for (i = 0; i < num_etha_ports; i++) {
-		rs_write32(priv->rdev[i]->rx_learning_chain->index, priv->addr + FWPBFCSDC(gwca_hw_idx, i));
-		rs_write32(BIT(priv->gwca.index), priv->addr + FWPBFC(i));
+	list_for_each_entry(rdev, &priv->rdev_list, list) {
+		rs_write32(rdev->rx_learning_chain->index, priv->addr + FWPBFCSDC(gwca_hw_idx, rdev->port));
+		rs_write32(BIT(priv->gwca.index), priv->addr + FWPBFC(rdev->port));
 	}
 	rs_write32(GENMASK(num_etha_ports - 1, 0), priv->addr + FWPBFC(priv->gwca.index));
 
@@ -3617,6 +3702,7 @@ static int rswitch_init(struct rswitch_private *priv)
 {
 	int i;
 	int err;
+	struct rswitch_device *rdev;
 
 	/* Non hardware initializations */
 	for (i = 0; i < num_etha_ports; i++)
@@ -3658,36 +3744,126 @@ static int rswitch_init(struct rswitch_private *priv)
 	return 0;
 
 out:
-	for (i--; i >= 0; i--)
-		rswitch_ndev_unregister(priv, i);
+	list_for_each_entry(rdev, &priv->rdev_list, list) {
+		rswitch_ndev_unregister(rdev);
+	}
 
 	rswitch_desc_free(priv);
 
 	return err;
 }
 
-static void rswitch_deinit_rdev(struct rswitch_private *priv, int index)
+static void rswitch_deinit_rdev(struct rswitch_device *rdev)
 {
-	struct rswitch_device *rdev = priv->rdev[index];
 
 	if (rdev->etha && rdev->etha->operated) {
 		rswitch_phy_deinit(rdev);
-		rswitch_mii_unregister(rdev);
+	 	rswitch_mii_unregister(rdev);
 	}
 }
 
 static void rswitch_deinit(struct rswitch_private *priv)
 {
-	int i;
+	struct rswitch_device *rdev;
 
-	for (i = 0; i < num_ndev; i++) {
-		rswitch_deinit_rdev(priv, i);
-		rswitch_ndev_unregister(priv, i);
+	list_for_each_entry(rdev, &priv->rdev_list, list) {
+		rswitch_deinit_rdev(rdev);
+		rswitch_ndev_unregister(rdev);
 	}
 
 	rswitch_free_irqs(priv);
 	rswitch_desc_free(priv);
 }
+
+static int vlan_dev_register(struct net_device *dev)
+{
+	struct net_device *real_dev;
+	struct rswitch_net *rn;
+	struct rswitch_private *priv;
+	struct rswitch_device *rdev, *parent_rdev;
+	int ret;
+	rn = net_generic(&init_net, rswitch_net_id);
+	priv = rn->priv;
+
+	real_dev = vlan_dev_real_dev(dev);
+
+	if (!ndev_is_rswitch_dev(real_dev, priv))
+		return 0;
+
+	parent_rdev = netdev_priv(real_dev);	
+
+	rdev = kzalloc(sizeof(*rdev), GFP_KERNEL);
+	if (!rdev)
+		return -ENOMEM;
+	dev->dev.parent = real_dev->dev.parent;
+	rdev->ndev = dev;
+	rdev->priv = priv;
+	INIT_LIST_HEAD(&rdev->routing_list);
+	INIT_LIST_HEAD(&rdev->tc_u32_list);
+	INIT_LIST_HEAD(&rdev->tc_matchall_list);
+	INIT_LIST_HEAD(&rdev->tc_flower_list);
+	INIT_LIST_HEAD(&rdev->list);
+	rdev->port = -1;
+	rdev->etha = NULL;
+	rdev->addr = priv->addr;
+	spin_lock_init(&rdev->lock);
+	list_add(&rdev->list, &priv->rdev_list);
+
+	ret = rswitch_txdmac_init(dev, priv);
+	if (ret)
+		goto err_tx;
+	ret = rswitch_rxdmac_init(dev, priv);
+	if (ret)
+		goto err_rx;
+
+	netdev_info(dev, "MAC address %pMn", dev->dev_addr);
+	return 0;
+err_rx:
+	rswitch_txdmac_free(dev, priv);
+err_tx:
+	list_del(&rdev->list);
+	return ret;
+}
+
+static void vlan_dev_unregister(struct net_device *dev)
+{
+	struct rswitch_device *rdev;
+	struct rswitch_net *rn;
+	struct rswitch_private *priv;
+
+	rn = net_generic(&init_net, rswitch_net_id);
+	priv = rn->priv;
+	rdev = ndev_to_rdev(dev);
+	list_del(&rdev->list);
+	rswitch_rxdmac_free(dev, priv);
+	rswitch_txdmac_free(dev, priv);
+}
+
+static int vlan_device_event(struct notifier_block *unused, unsigned long event,
+			     void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	
+	if (!is_vlan_dev(dev)) {
+		//pr_err("NOT VLAN\n");
+		return NOTIFY_DONE;
+	}
+
+	switch(event) {
+	case NETDEV_REGISTER:
+		vlan_dev_register(dev);
+		break;
+	case NETDEV_UNREGISTER:
+		vlan_dev_unregister(dev);
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block vlan_notifier_block __read_mostly = {
+	.notifier_call = vlan_device_event,
+};
 
 static int renesas_eth_sw_probe(struct platform_device *pdev)
 {
@@ -3707,6 +3883,7 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
+	INIT_LIST_HEAD(&priv->rdev_list);
 	priv->ptp_priv = rtsn_ptp_alloc(pdev);
 	if (!priv->ptp_priv)
 		return -ENOMEM;
@@ -3762,7 +3939,8 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 
 	/* Fixed to use GWCA1 */
 	priv->gwca.index = 4;
-	priv->gwca.num_chains = num_ndev * NUM_CHAINS_PER_NDEV;
+	priv->gwca.num_chains = RSWITCH_MAX_NUM_CHAINS;
+	//priv->gwca.num_chains = num_ndev * NUM_CHAINS_PER_NDEV;
 	priv->gwca.chains = devm_kcalloc(&pdev->dev, priv->gwca.num_chains,
 					 sizeof(*priv->gwca.chains), GFP_KERNEL);
 	if (!priv->gwca.chains)
@@ -3785,6 +3963,10 @@ static int renesas_eth_sw_probe(struct platform_device *pdev)
 	rn->priv = priv;
 
 	priv->fib_nb.notifier_call = rswitch_fib_event;
+
+	ret = register_netdevice_notifier(&vlan_notifier_block);
+	if (ret)
+		return ret;
 
 	return register_fib_notifier(&init_net, &priv->fib_nb, NULL, NULL);
 }
