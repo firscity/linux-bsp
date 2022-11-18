@@ -1144,7 +1144,7 @@ static bool rswitch_rx_chain(struct net_device *ndev, int *quota, struct rswitch
 			get_ts = rdev->priv->ptp_priv->tstamp_rx_ctrl & RTSN_RXTSTAMP_TYPE_V2_L2_EVENT;
 		if (get_ts) {
 			struct skb_shared_hwtstamps *shhwtstamps;
-			struct timespec64 ts;
+			struct timespec64 ts = {0};
 
 			shhwtstamps = skb_hwtstamps(skb);
 			memset(shhwtstamps, 0, sizeof(*shhwtstamps));
@@ -1240,8 +1240,8 @@ int rswitch_tx_free(struct net_device *ndev, bool free_txed_only)
 		if (skb) {
 			if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP &&
 			    !rswitch_is_front_dev(rdev)) {
-				struct skb_shared_hwtstamps shhwtstamps;
-				struct timespec64 ts;
+				struct skb_shared_hwtstamps shhwtstamps = {0};
+				struct timespec64 ts = {0};
 
 				rswitch_get_timestamp(rdev->priv, &ts);
 				memset(&shhwtstamps, 0, sizeof(shhwtstamps));
@@ -2116,7 +2116,7 @@ static int rswitch_hwstamp_get(struct net_device *ndev, struct ifreq *req)
 	struct rswitch_device *rdev = netdev_priv(ndev);
 	struct rswitch_private *priv = rdev->priv;
 	struct rtsn_ptp_private *ptp_priv = priv->ptp_priv;
-	struct hwtstamp_config config;
+	struct hwtstamp_config config = {0};
 
 	config.flags = 0;
 	config.tx_type = ptp_priv->tstamp_tx_ctrl ? HWTSTAMP_TX_ON :
@@ -2481,7 +2481,7 @@ static int rswitch_hwstamp_set(struct net_device *ndev, struct ifreq *req)
 	struct rswitch_device *rdev = netdev_priv(ndev);
 	struct rswitch_private *priv = rdev->priv;
 	struct rtsn_ptp_private *ptp_priv = priv->ptp_priv;
-	struct hwtstamp_config config;
+	struct hwtstamp_config config = {0};
 	u32 tstamp_rx_ctrl = RTSN_RXTSTAMP_ENABLED;
 	u32 tstamp_tx_ctrl;
 
@@ -2629,7 +2629,7 @@ free_param_list:
 
 static void rswitch_fib_event_add(struct rswitch_fib_event_work *fib_work)
 {
-	struct fib_entry_notifier_info fen;
+	struct fib_entry_notifier_info fen = {0};
 	struct rswitch_ipv4_route *new_routing_list;
 	struct rswitch_device *dev;
 	struct fib_nh *nh;
@@ -2663,7 +2663,7 @@ static void rswitch_fib_event_add(struct rswitch_fib_event_work *fib_work)
 
 static void rswitch_fib_event_remove(struct rswitch_fib_event_work *fib_work)
 {
-	struct fib_entry_notifier_info fen;
+	struct fib_entry_notifier_info fen = {0};
 	struct rswitch_device *dev;
 	struct fib_nh *nh;
 	struct list_head *cur, *tmp;
@@ -3620,7 +3620,7 @@ void rswitch_add_ipv4_forward(struct rswitch_private *priv, u32 src_ip, u32 dst_
 {
 	struct rswitch_device *dev;
 	struct rswitch_ipv4_route *routing_list = NULL;
-	struct l3_ipv4_fwd_param param;
+	struct l3_ipv4_fwd_param param = {0};
 	u8 mac[ETH_ALEN];
 
 	if (is_l3_exist(priv, src_ip, dst_ip))
