@@ -63,7 +63,7 @@ rswitch_vmq_back_ndev_register(struct rswitch_private *priv, int index)
 	rdev = netdev_priv(ndev);
 	rdev->ndev = ndev;
 	rdev->priv = priv;
-	priv->rdev[RSWITCH_BACK_BASE_INDEX + index] = rdev;
+	list_add(&rdev->list, &priv->rdev_list);
 	rdev->port = priv->gwca.index;
 	rdev->etha = NULL;
 	rdev->remote_chain = -1;
@@ -126,8 +126,7 @@ static int rswitch_vmq_back_remove(struct xenbus_device *dev)
 
 	if (be->rdev) {
 		rswitch_vmq_back_disconnect(dev);
-		rswitch_ndev_unregister(be->rswitch_priv,
-					RSWITCH_BACK_BASE_INDEX + be->if_num);
+		rswitch_ndev_unregister(be->rdev);
 		be->rdev = NULL;
 	}
 
@@ -137,10 +136,12 @@ static int rswitch_vmq_back_remove(struct xenbus_device *dev)
 		rswitch_gwca_put(be->rswitch_priv, be->tx_chain);
 
 	if (be->type == RSWITCH_PV_TSN) {
-		struct rswitch_device *rdev = be->rswitch_priv->rdev[be->if_num];
-		rswitch_mfwd_set_port_based(be->rswitch_priv, be->if_num,
-					    rdev->rx_default_chain);
-		netif_dormant_off(rdev->ndev);
+		struct rswitch_device *rdev = rswitch_find_rdev_by_port(be->rswitch_priv, be->if_num);
+		if (rdev) {
+			rswitch_mfwd_set_port_based(be->rswitch_priv, be->if_num,
+							rdev->rx_default_chain);
+			netif_dormant_off(rdev->ndev);
+		}
 	}
 
 	kfree(be);
@@ -215,7 +216,10 @@ static int rswitch_vmq_back_probe(struct xenbus_device *dev,
 		}
 	}
 	else if (strcmp(type_str, "tsn") == 0) {
-		struct rswitch_device *rdev = be->rswitch_priv->rdev[be->if_num];
+		struct rswitch_device *rdev = rswitch_find_rdev_by_port(be->rswitch_priv, be->if_num);
+		if (!rdev)
+			return -ENODEV;
+
 
 		if (be->if_num > RSWITCH_MAX_NUM_ETHA) {
 			xenbus_dev_fatal(dev, err, "Invalid device tsn%d ", be->if_num);
@@ -255,7 +259,12 @@ static int rswitch_vmq_back_probe(struct xenbus_device *dev,
 				goto abort_transaction;
 			break;
 		case RSWITCH_PV_TSN: {
-			struct rswitch_device *rdev = be->rswitch_priv->rdev[be->if_num];
+			struct rswitch_device *rdev = rswitch_find_rdev_by_port(be->rswitch_priv, be->if_num);
+			if (!rdev) {
+				err = -ENODEV;
+				goto fail;
+			}
+
 
 			err = xenbus_printf(xbt, dev->nodename,
 					    "mac", "%pMn",
